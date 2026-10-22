@@ -1970,6 +1970,25 @@ do
 		if r > nProbeAt and r < nProbeAt + 1.0 then nEarlyProbe = nEarlyProbe + 1 end
 	end
 	check(nEarlyProbe == 0 and #tNative.tListReads >= 2, "0b: the list is not read in the second after the handler (" .. nEarlyProbe .. " of " .. #tNative.tListReads .. ")")
+	-- nor while the game says it is loading the list (network.loadingItems):
+	-- the watch waits, then reads again once the list has loaded
+	reset()
+	oStorage:TransitionIn()
+	addAnimal(2103, { species = "Lion", name = "Zuri" })
+	tNative.bLoading = true
+	oStorage:OnQuickTradeAnimals({ "animal_1" })
+	local nLoadingFrom = nClock
+	seconds(3)
+	local nLoadingReads = 0
+	for _, r in ipairs(tNative.tListReads or {}) do if r > nLoadingFrom then nLoadingReads = nLoadingReads + 1 end end
+	tNative.bLoading = false
+	check(nLoadingReads == 0, "0b: the list is not read while it loads (" .. nLoadingReads .. ")")
+	local nLoadedAt = nClock
+	seconds(1)
+	local nLoadedReads = 0
+	for _, r in ipairs(tNative.tListReads or {}) do if r > nLoadedAt then nLoadedReads = nLoadedReads + 1 end end
+	check(nLoadedReads > 0 and Lister.tProbe ~= nil, "0b: the watch reads again once the list has loaded (" .. nLoadedReads .. ")")
+	Lister.tProbe = nil
 	seconds(9)
 	local nErr = count("probe_server_error")
 	serverError(5, 31)
