@@ -1,11 +1,10 @@
 -----------------------------------------------------------------------
 --  PZ2QoL.Autosave
 --
---  More reliable autosaves. The game autosaves every 10 minutes, but it
---  cancels the pending autosave whenever the park world closes (a trip to
---  the hub: Animal Storage, Market) and starts a fresh 10 minutes on the
---  way back (DarwinWorld.OnDeactivate / OnActivate), so a player who goes
---  back and forth gets no autosaves at all.
+--  Autosaves at the player's interval. The game autosaves every 10
+--  minutes, suspending its timer while the park world is closed (a trip to
+--  the hub: Animal Storage, Market; DarwinWorld.OnDeactivate / OnActivate,
+--  build 26106647).
 --
 --  This module keeps its own clock: time spent in the park since the zoo
 --  was last saved (any save: the game's autosave, ours, or a manual save).
@@ -31,6 +30,7 @@ local tostring = global.tostring
 local math     = global.math
 local string   = global.string
 local ipairs   = global.ipairs
+local Handover = global.require("PZ2QoL.Handover")
 
 local Autosave = module(...)
 
@@ -46,8 +46,9 @@ Autosave.nMinutes = Autosave.nDefaultMinutes
 Autosave.nElapsed = 0          -- seconds in the park since the zoo was saved
 Autosave.bArmed = false        -- the game has an autosave set up (park open)
 Autosave.nArmedAt = nil
+Autosave.nEnteredAt = nil      -- the park's first frame after a load or a hub trip
 Autosave.nPendingSince = nil   -- our request waits for the game's answer
-Autosave.bPendingManual = false
+Autosave.bLateOurs = false     -- our request timed out; the game may still answer it
 Autosave.nRetryAt = 0
 Autosave.nLastTick = nil
 Autosave.nLastPush = 0
@@ -93,9 +94,38 @@ Autosave._Saved = function(self, sKind)
 	self:Push()
 end
 
+Autosave._SaveDue = function(self)
+	return self.nMinutes > 0 and self.nElapsed >= self.nMinutes * 60
+end
+
+Autosave._InPark = function(self, nNow)
+	return self.nLastTick ~= nil and nNow - self.nLastTick < 2
+end
+
+Autosave._Settling = function(self, nNow)
+	local function within(nSince)
+		return nSince ~= nil and nNow - nSince < self.nSettleSeconds
+	end
+	return within(self.nArmedAt) or within(self.nEnteredAt)
+end
+
+-- when Tick asks next (seconds from now, nil: not known) and why: 'interval' in park time until a save is due,
+-- then 'waiting' while Tick cannot try and 'retry' when it can; 'manual' with the mod's autosave off
+Autosave._NextTry = function(self, nNow)
+	if self.nMinutes <= 0 then
+		return nil, "manual"
+	end
+	if not self:_SaveDue() then
+		return math.ceil(self.nMinutes * 60 - self.nElapsed), "interval"
+	end
+	if not self:_InPark(nNow) or not self.bArmed or self:_Settling(nNow) then
+		return nil, "waiting"
+	end
+	return math.ceil(math.max(0, self.nRetryAt - nNow)), "retry"
+end
+
 Autosave._Failed = function(self, sWhy)
 	self.nPendingSince = nil
-	self.bPendingManual = false
 	self.nRetryAt = now() + self.nRetrySeconds
 	self.sLastError = tostring(sWhy)
 	self:_Mark("autosave_failed")
@@ -104,7 +134,7 @@ Autosave._Failed = function(self, sWhy)
 		-- shown once per reason and session, logged every time
 		local bShow = not self.tShown[self.sLastError]
 		self.tShown[self.sLastError] = true
-		pcall(Errors.Report, Errors, "mod", "Autosave failed", self.sLastError .. " The mod tries again in a minute.", bShow)
+		pcall(Errors.Report, Errors, "mod", "Autosave failed", self.sLastError .. " The Autosave card shows when it tries again.", bShow)
 	end
 	self:Push()
 end
@@ -116,9 +146,10 @@ Autosave._OnAutosaveComplete = function(self, tDetails)
 	end
 	-- the game re-arms the next slot right after this; wait for it
 	self.bArmed = false
-	local bOurs = self.nPendingSince ~= nil
+	-- ours, or ours answered after the mod stopped waiting for it
+	local bOurs = self.nPendingSince ~= nil or self.bLateOurs
 	self.nPendingSince = nil
-	self.bPendingManual = false
+	self.bLateOurs = false
 	if type(tDetails) == "table" and tDetails.exception ~= nil then
 		self:_Failed("The game could not write the autosave (" .. tostring(tDetails.exception) .. ").")
 		return
@@ -152,6 +183,7 @@ Autosave._PatchSaveAPI = function(self)
 	pcall(function() self.sAutoIdent = tSave.GetIdentForSaveID(tSave.ID_ZooAutosave) end)
 	self.sZooIdent = type(self.sZooIdent) == "string" and self.sZooIdent or "zoo"
 	self.sAutoIdent = type(self.sAutoIdent) == "string" and self.sAutoIdent or "zooauto"
+	-- fnAfter(tResults, ...): the call's results, then its arguments
 	local function after(sName, fnAfter)
 		local fn = tSave[sName]
 		if type(fn) ~= "function" then
@@ -160,7 +192,7 @@ Autosave._PatchSaveAPI = function(self)
 		pcall(function()
 			tSave[sName] = function(...)
 				local t = global.table.pack(fn(...))
-				pcall(fnAfter, ...)
+				pcall(fnAfter, t, ...)
 				return global.table.unpack(t, 1, t.n)
 			end
 		end)
@@ -175,14 +207,15 @@ Autosave._PatchSaveAPI = function(self)
 	after("SetAutosave", armed)
 	after("SetNewAutosave", armed)
 	after("UnsetAutosave", function()
-		-- the park world closed (hub trip, quit): the clock pauses
+		-- the zoo closed (unloaded, quit): the clock pauses
 		self.bArmed = false
 		self.nPendingSince = nil
-		self.bPendingManual = false
+		self.bLateOurs = false
 	end)
-	-- a manual save of the zoo (ParkLoadSaveManager.SaveParkToSaveToken)
-	after("RequestSave", function(_, tInfo)
-		if type(tInfo) == "table" and tInfo.type == self.sZooIdent then
+	-- a manual save of the zoo (ParkLoadSaveManager.SaveParkToSaveToken),
+	-- counted as the game counts it: only a request it accepted
+	after("RequestSave", function(tResults, _, tInfo)
+		if tResults[1] and type(tInfo) == "table" and tInfo.type == self.sZooIdent then
 			self:_Saved("manual")
 		end
 	end)
@@ -202,7 +235,6 @@ Autosave._Request = function(self, bManual)
 		return false
 	end
 	self.nPendingSince = nNow
-	self.bPendingManual = bManual == true
 	self:_Mark(bManual and "autosave_request_now" or "autosave_request")
 	self:Push()
 	return true
@@ -213,6 +245,11 @@ end
 -- until the game has an autosave slot set up (bArmed).
 Autosave.Tick = function(self)
 	local nNow = now()
+	-- back in the park (a load, a hub trip): the game keeps its slot armed
+	-- across a hub trip, so the park settles from here as after arming
+	if not self:_InPark(nNow) then
+		self.nEnteredAt = nNow
+	end
 	local nDelta = self.nLastTick and (nNow - self.nLastTick) or 0
 	self.nLastTick = nNow
 	-- a long frame (loading, a hitch, the hub in between) counts as one second at most
@@ -225,6 +262,7 @@ Autosave.Tick = function(self)
 	end
 	if self.nPendingSince ~= nil then
 		if nNow - self.nPendingSince > self.nAnswerSeconds then
+			self.bLateOurs = true
 			self:_Failed("The game did not answer the autosave request.")
 		end
 		return
@@ -232,10 +270,10 @@ Autosave.Tick = function(self)
 	if self.nMinutes <= 0 or nNow < self.nRetryAt then
 		return
 	end
-	if self.nArmedAt ~= nil and nNow - self.nArmedAt < self.nSettleSeconds then
+	if self:_Settling(nNow) then
 		return
 	end
-	if self.nElapsed >= self.nMinutes * 60 then
+	if self:_SaveDue() then
 		self:_Request(false)
 	end
 end
@@ -257,23 +295,27 @@ end
 -----------------------------------------------------------------------
 Autosave.State = function(self)
 	local nNow = now()
+	local nRetryIn, sNextTry = self:_NextTry(nNow)
 	return {
 		minutes = self.nMinutes,
 		minMinutes = self.nMinMinutes,
 		available = self.bAvailable,
-		inPark = self.nLastTick ~= nil and nNow - self.nLastTick < 2,
+		inPark = self:_InPark(nNow),
 		armed = self.bArmed,
 		pending = self.nPendingSince ~= nil,
 		elapsed = math.floor(self.nElapsed),
-		retryIn = math.max(0, math.ceil(self.nRetryAt - nNow)),
+		retryIn = nRetryIn,
+		nextTry = sNextTry,
 		sinceSave = self.nSavedAt and math.floor(nNow - self.nSavedAt) or -1,
 		lastKind = self.sLastKind,
 		lastError = self.sLastError,
 	}
 end
 
+-- UTF-8 bytes pass through as they are (JSON text is UTF-8); escaping them
+-- one by one would turn each into a separate wrong character
 local function jsonString(s)
-	return '"' .. string.gsub(tostring(s), '[%c"\\\128-\255]', function(c)
+	return '"' .. string.gsub(tostring(s), '[%c"\\]', function(c)
 		return string.format("\\u%04x", string.byte(c))
 	end) .. '"'
 end
@@ -281,9 +323,9 @@ end
 Autosave.StateJson = function(self)
 	local t = self:State()
 	local tParts = {}
-	for _, k in ipairs({ "minutes", "minMinutes", "available", "inPark", "armed", "pending", "elapsed", "retryIn", "sinceSave", "lastKind", "lastError" }) do
+	for _, k in ipairs({ "minutes", "minMinutes", "available", "inPark", "armed", "pending", "elapsed", "retryIn", "nextTry", "sinceSave", "lastKind", "lastError" }) do
 		local v = t[k]
-		local sValue = type(v) == "string" and jsonString(v) or tostring(v)
+		local sValue = type(v) == "string" and jsonString(v) or (v == nil and "null") or tostring(v)
 		tParts[#tParts + 1] = '"' .. k .. '":' .. sValue
 	end
 	return "{" .. global.table.concat(tParts, ",") .. "}"
@@ -327,19 +369,11 @@ Autosave.Attach = function(self, oUI)
 		return
 	end
 	self.tViews[oUI] = true
-	local function guard(fn)
-		return function(_, ...)
-			local bOk, sErr = pcall(fn, ...)
-			if not bOk and self.Core then
-				self.Core.Trace("autosave event failed: " .. tostring(sErr))
-			end
-		end
-	end
-	pcall(function()
-		oUI:AddEventListener("PZ2QoL_AutosaveSet", 1, guard(function(n) self:Set(n) end), self)
-		oUI:AddEventListener("PZ2QoL_AutosaveNow", 0, guard(function() self:SaveNow() end), self)
-		oUI:AddEventListener("PZ2QoL_AutosaveGet", 0, guard(function() self:Push() end), self)
-	end)
+	Handover.Listen(oUI, self, function(sMsg) self.Core.Trace("autosave: " .. sMsg) end, {
+		{ "PZ2QoL_AutosaveSet", 1, function(n) self:Set(n) end },
+		{ "PZ2QoL_AutosaveNow", 0, function() self:SaveNow() end },
+		{ "PZ2QoL_AutosaveGet", 0, function() self:Push() end },
+	})
 	self:Push()
 end
 

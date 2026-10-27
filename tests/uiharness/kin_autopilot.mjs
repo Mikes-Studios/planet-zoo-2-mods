@@ -423,6 +423,26 @@ export async function hud(page, ctx) {
         await ctx.shot(page, 'ka_4_panel_on');
         facts.layoutPanelOn = await panelLayout(page);
         panelProblems('panel (on)', facts.layoutPanelOn, problems);
+        // Clean up: the habitats to tick, the species' own ticked, and Cancel back
+        await click(page.locator(`${PANEL} .PZ2QoL_kbProgHead .PZ2QoL_kpBtn`, { hasText: 'Clean up' }));
+        await page.waitForTimeout(400);
+        facts.cleanPick = await page.evaluate(sel => {
+            const root = document.querySelector(sel);
+            const rows = Array.from(root.querySelectorAll('.PZ2QoL_apPick'));
+            return {
+                rows: rows.length,
+                ticked: rows.filter(r => r.classList.contains('on')).map(r => r.querySelector('.PZ2QoL_apPickName').textContent),
+                btns: Array.from(root.querySelectorAll('.PZ2QoL_kpBtn')).map(b => b.textContent.trim()),
+            };
+        }, PANEL);
+        await ctx.shot(page, 'ka_4b_clean_pick');
+        if (!facts.cleanPick.rows) problems.push('Clean up: no habitats to tick');
+        if (!facts.cleanPick.ticked.length) problems.push("Clean up: the species' own habitats are not ticked");
+        if (!facts.cleanPick.btns.some(t => /^Clean up \d+ habitat/.test(t)) || !facts.cleanPick.btns.includes('Whole zoo')) problems.push(`Clean up: the starts are missing (${facts.cleanPick.btns})`);
+        await click(page.locator(`${PANEL} .PZ2QoL_kbProgHead .PZ2QoL_kpBtn`, { hasText: 'Cancel' }));
+        await page.waitForTimeout(300);
+        if (await page.locator(`${PANEL} .PZ2QoL_apPick`).count()) problems.push('Clean up: Cancel left the habitat list open');
+        panelProblems('panel (after Clean up)', await panelLayout(page), problems);
         layoutProblems('board with the panel (on)', await layoutFacts(page), problems);
         const O = facts.on;
         if (!O.saved.on || !O.saved.stored || !O.saved.stored.on) problems.push(`Turn on did not save: ${JSON.stringify(O.saved)}`);

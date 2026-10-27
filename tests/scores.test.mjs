@@ -2,9 +2,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-    applyStorageFilters, breederScore, DEFAULT_STORAGE_FILTERS, Gender, geneScore, isBestValueCandidate, Maturity,
-    scoreTier, speciesStats, storageFiltersActive, storageSummary, surplusIds, valueIndex,
+    applyStorageFilters, breederScore, DEFAULT_STORAGE_FILTERS, Gender, geneScore, Maturity, PICK_MIN_SCORE,
+    speciesStats, storageFiltersActive, storageSummary, surplusIds, valueIndex,
 } from '../mods/PZ2QoL/UI/UIGameface/js/mods/pz2qol/scores.js';
+import { tierOf } from '../mods/PZ2QoL/UI/UIGameface/js/mods/pz2qol/ui.js';
 
 const animal = (id, over = {}) => Object.assign({
     id, species: 'Lion', gender: Gender.Male, maturity: Maturity.Adult,
@@ -41,20 +42,20 @@ test('valueIndex per 1k cash and per 100 CC', () => {
     assert.equal(valueIndex(animal('d', { price: undefined })), null);
 });
 
-test('best value needs a decent gene score', () => {
+// a Market pick (marketpickcore.js) is only an animal worth having at all
+test('a pick needs a decent gene score', () => {
     const cheapPoor = animal('a', { price: 100, genes: { size: .3, longevity: .3, fertility: .3, immunity: .3 } });
     const fairGood = animal('b', { price: 5000, genes: { size: .7, longevity: .7, fertility: .7, immunity: .7 } });
-    assert.equal(isBestValueCandidate(cheapPoor), false);
-    assert.equal(isBestValueCandidate(fairGood), true);
-    assert.equal(isBestValueCandidate(animal('c', { price: 0 })), false);
+    assert.ok(geneScore(cheapPoor) < PICK_MIN_SCORE);
+    assert.ok(geneScore(fairGood) >= PICK_MIN_SCORE);
 });
 
-test('scoreTier thresholds', () => {
-    assert.equal(scoreTier(null), 'none');
-    assert.equal(scoreTier(80), 'great');
-    assert.equal(scoreTier(60), 'good');
-    assert.equal(scoreTier(40), 'fair');
-    assert.equal(scoreTier(39), 'poor');
+test('score tier thresholds (the badge colour, ui.js tierOf)', () => {
+    assert.equal(tierOf(null), 'tier_none');
+    assert.equal(tierOf(80), 'tier_great');
+    assert.equal(tierOf(60), 'tier_good');
+    assert.equal(tierOf(40), 'tier_fair');
+    assert.equal(tierOf(39), 'tier_poor');
 });
 
 const herd = [
@@ -84,8 +85,8 @@ test('applyStorageFilters', () => {
     assert.deepEqual(ids(applyStorageFilters(herd, f({}))), ids(herd));
     assert.deepEqual(ids(applyStorageFilters(herd, f({ pregnant: true }))), ['f1']);
     assert.deepEqual(ids(applyStorageFilters(herd, f({ alpha: true }))), ['z2']);
-    assert.deepEqual(ids(applyStorageFilters(herd, f({ juveniles: true }))), ['f2']);
-    assert.ok(!ids(applyStorageFilters(herd, f({ adults: true }))).includes('f2'));
+    assert.deepEqual(ids(applyStorageFilters(herd, f({ adults: 'juvenile' }))), ['f2']);
+    assert.ok(!ids(applyStorageFilters(herd, f({ adults: 'all' }))).includes('f2'));
     assert.deepEqual(ids(applyStorageFilters(herd, f({ pairsOnly: true }))), ['m1', 'm2', 'm3', 'f1', 'f2']);
     assert.deepEqual(ids(applyStorageFilters(herd, f({ minScore: 80 }))), ['m1']);
     assert.deepEqual(ids(applyStorageFilters(herd, f({ surplusOnly: true, surplusKeep: 2 }))), ['m3']);

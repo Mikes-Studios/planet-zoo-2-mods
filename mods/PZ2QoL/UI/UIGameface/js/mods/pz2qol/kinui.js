@@ -7,9 +7,11 @@ import {
     fertilityText, holdReason,
 } from '/js/mods/pz2qol/kincore.js';
 import { getKinSettings, locateAnimal, setContraception } from '/js/mods/pz2qol/kin.js';
-import { clear, h, icon, setClass } from '/js/mods/pz2qol/ui.js';
+import { clear, h, icon, setClass, visibleBox } from '/js/mods/pz2qol/ui.js';
 import { reportError } from '/js/mods/pz2qol/errors.js';
 import { besideAnchor } from '/js/mods/pz2qol/placement.js';
+import { remPx } from '/js/mods/pz2qol/kinpanel.js';
+import { visibleCounts, worstOf } from '/js/mods/pz2qol/kinplannercore.js';
 import { speciesName } from '/js/mods/pz2qol/speciesnames.js';
 
 export function sexSymbol(sex) {
@@ -178,9 +180,12 @@ export function animalCardContent(model, animal, { pinned = false, onAction, ope
 
 // ------------------------------------------------------- floating card
 
+const ANCHOR_CHECK_MS = 300;
+
 let card = null;
 let cardOwner = null;
 let pinned = false;
+let watch = 0;
 
 function ensureCard() {
     if (card) return card;
@@ -190,7 +195,7 @@ function ensureCard() {
     document.body.appendChild(card);
     // capture phase: the game's own elements stop mousedown from bubbling
     document.addEventListener('mousedown', e => {
-        if (!pinned) return;
+        if (!cardOwner) return;
         for (let n = e.target; n; n = n.parentNode) {
             if (n === card || n === cardOwner) return;
         }
@@ -207,15 +212,8 @@ export function hideKinCard(anchor) {
     setClass(card, 'pinned', false);
     pinned = false;
     cardOwner = null;
-}
-
-function remPx() {
-    try {
-        return parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
-    }
-    catch (e) {
-        return 16;
-    }
+    clearInterval(watch);
+    watch = 0;
 }
 
 // The card was display: none a moment ago; Gameface may still measure it as
@@ -264,6 +262,10 @@ export function showKinCard(anchor, build, asPinned, fromHover) {
     setClass(card, 'hidden', false);
     place(anchor);
     placeAfterLayout(anchor);
+    // the game can close the panel under the anchor without a mouseout
+    if (!watch) watch = setInterval(() => {
+        if (cardOwner && !visibleBox(cardOwner)) hideKinCard();
+    }, ANCHOR_CHECK_MS);
 }
 
 // Hover peeks, click pins (with actions). build(pinned) returns the content.
@@ -293,33 +295,15 @@ export function attachKinCard(anchor, build) {
 // --------------------------------------------------------- habitat line
 
 // "⚠ 2 inbreeding risks · 1 close kin" for a habitat (or one species in it).
+// counts: the ones the player sees (kinplannercore visibleCounts).
 export function riskSummaryText(counts) {
     const parts = [];
     if (counts.risk) parts.push(`${counts.risk} inbreeding risk${counts.risk > 1 ? 's' : ''}`);
     if (counts.kin) parts.push(`${counts.kin} close kin`);
     if (counts.future) parts.push(`${counts.future} later`);
     if (counts.held) parts.push(`${counts.held} bonded elsewhere`);
-    if (counts.covered && getKinSettings().showCovered) parts.push(`${counts.covered} covered`);
+    if (counts.covered) parts.push(`${counts.covered} covered`);
     return parts.join(' · ');
-}
-
-export function worstOfCounts(counts) {
-    if (counts.risk) return 'risk';
-    if (counts.kin) return 'kin';
-    if (counts.future) return 'future';
-    if (counts.held) return 'held';
-    if (counts.covered) return 'covered';
-    return null;
-}
-
-export function habitatRiskLine(model, habId, species) {
-    const s = habitatSummary(model, habId);
-    if (!s) return null;
-    const counts = species ? (s.species.find(x => x.species === species) || {}).counts : s.counts;
-    if (!counts) return null;
-    const worst = worstOfCounts(counts);
-    const text = worst ? riskSummaryText(counts) : 'No related breeding pairs';
-    return h(`div.PZ2QoL_kinLine.sev_${worst || 'none'}`, null, h('div.PZ2QoL_kinIcon'), h('span', { text }));
 }
 
 export { offspringScore };
@@ -331,12 +315,12 @@ export function habitatCardContent(model, habId, { pinned = false, openPlanner, 
     const s = habitatSummary(model, habId);
     const body = h('div.PZ2QoL_kinCardBody');
     const name = s ? s.name : 'Habitat';
-    const counts = s ? (species ? ((s.species.find(x => x.species === species) || {}).counts || {}) : s.counts) : {};
+    const counts = visibleCounts(s ? (species ? (s.species.find(x => x.species === species) || {}).counts : s.counts) : null, getKinSettings().showCovered);
     body.appendChild(h('div.PZ2QoL_kinCardHead', null,
         h('div.PZ2QoL_kinCardIcon'),
         h('div.PZ2QoL_cardTitles', null,
             h('div.PZ2QoL_cardTitle', { text: species ? `${name} · ${speciesName(species)}` : name }),
-            h('div.PZ2QoL_cardSubtitle', { text: worstOfCounts(counts) ? riskSummaryText(counts) : 'No related breeding pairs' }))));
+            h('div.PZ2QoL_cardSubtitle', { text: worstOf(counts) ? riskSummaryText(counts) : 'No related breeding pairs' }))));
     const showCovered = getKinSettings().showCovered;
     const pairs = [];
     for (const sp of (s ? s.species : [])) {

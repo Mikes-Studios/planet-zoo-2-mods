@@ -39,9 +39,10 @@
   storage toolbar covered Animal Storage's species-search suggestions (`InputField` renders them as
   `.InputField_resultsMenu` in a Layer, only while editing with matches) and stayed over the Zoopedia
   opened from storage (a Layer with `.Layer_background.darken`). In the park HUD the Zoopedia is a
-  plain `.ZoopediaModule_root` (`.hidden` when closed). PZ2QoL's `cover.js` `gameOnTop()` checks all
-  of these plus `.PopupActionsModule_root.show`; the storage/market toolbars (`bars.js`), the lister
-  panel and the zoo toolbar hide while it is true. **offline** (UI source; harness `kin_storage.mjs`
+  plain `.ZoopediaModule_root` (`.hidden` when closed). PZ2QoL's `stepaside.js` lists these
+  (`GAME_DROPDOWNS`, `GAME_WINDOWS`): the storage/market toolbars (`bars.js`), the lister panel and
+  the zoo toolbar step aside while one of them covers them, and hide while a game popup is open
+  (`ui.js` `isGamePopupOpen`, `.PopupActionsModule_root.show`). **offline** (UI source; harness `kin_storage.mjs`
   section 5)
 
 ## CSS rules for Gameface
@@ -133,6 +134,15 @@
   or the zoo's store becomes known. The store is the truth once read: data the page held before
   (another zoo's, the localStorage mirror) is not merged in, only this view's pending changes.
 
+## The game's windows over the mod's widgets
+
+- The mod's widgets live under `<body>` with a z-index, so they paint over the game's tooltips, search menus
+  and windows unless they step aside. `stepaside.js` hides a widget (`PZ2QoL_yield`: hidden, clicks pass
+  through, its place kept) while one covers it: `GAME_TOOLTIPS`, `GAME_DROPDOWNS` (a search box's suggestions,
+  the species filter), `GAME_WINDOWS` (the Zoopedia, a darkened modal Layer). It probes points across the
+  widget, so a window elsewhere on screen leaves it alone. Only elements that exist while they show: the HUD
+  keeps full-screen tooltip frames on the page, and matching those would hide a widget for good.
+
 ## Localisation (species names)
 
 - `/js/common/core/Localisation.js`: `translate(str)` wants a **bracketed** symbol
@@ -147,7 +157,7 @@
 - PZ2QoL: `speciesnames.js` `speciesName(raw)` (game name, else the internal name with spaces;
   caches successes only, reports a failure once, silently), pure logic in `speciesnamecore.js`
   (node-tested; node tests can't import game modules). Kin setting `gameSpeciesNames` (default on,
-  session-only like every Kin setting; switch in the Kin planner's Settings) turns it off
+  kept in the player's settings like every Kin setting; switch in the Kin planner's Settings) turns it off
   everywhere: Species board, Kin planner, kin cards, Find a habitat, Market lister and desk.
   Sorts, matching (`lister.js` `speciesUid`) and `data-species` keep the ids.
 - The harness has no loc files (`.locxml` 404, dictionary empty), so names fall back to the ids;
@@ -276,6 +286,7 @@
 - So mod JS runs on the UI thread only, and long work must be sliced (as `planProgrammeAsync` is). Multi-core work needs a native helper (`lua-runtime.md`, "Loaders and a native return channel").
 
 - **Settings must not live in localStorage** (**proven**: the developer's Kin settings reset on every restart, 2026-10-18). Keep player-wide settings in `prefs.js` (the player save) and per-zoo data in `userstore.js`. `marketdesk.js` filters, `kinmates.js` sort, `bars.js` collapsed bars and `lister.js` enabled/offset are still session-only.
+- **Kin settings are one table** (`kinsettings.js`, pure): each entry holds a setting's key, default and, for a switch in the Kin planner's Settings, its section, sub-section, label, tip, choices (a pick-one row), note and `needs` (the setting it depends on: greyed out and inert while that one is off). `kin.js` takes `DEFAULT_KIN_SETTINGS` from it; `kinplanner.js renderPopover` draws the popover from it in table order (the muted species close the Trade centre section). A new setting is one entry. Pick-one rows carry `data-setting="<key>"` and their items `data-value`, which the harness selects by. An entry with no section has no switch (`enabled`, `allowPlansOnline`).
 
 - **Gamepad buttons on a mod panel** (2026-10-18, **offline**; harness proven): `import { onShouldBlockInput } from '/js/common/core/Input.js'`
   and add a listener `e => ...`: every UI input (`e.inputName` `UI_Select` = A, `UI_Cancel` = B/back; `e.button.isPressed()` /

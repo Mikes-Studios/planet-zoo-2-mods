@@ -14,12 +14,11 @@ test('ids and labels', () => {
     assert.equal(sendButtonLabel(1), 'Find a habitat');
 });
 
-test('the button: needs a selection, the game allowing Send to Zoo, and consent in Franchise', () => {
+test('the button: needs a selection and the game allowing Send to Zoo (in Franchise the click is the go-ahead)', () => {
     assert.match(blockedReason({ count: 0 }), /Select/);
     assert.match(blockedReason({ count: 3, sendAllowed: false }), /can't send/);
     assert.match(blockedReason({ count: 3, moving: true }), /already sending/);
-    assert.match(blockedReason({ count: 3, franchise: true }), /Franchise/);
-    assert.equal(blockedReason({ count: 3, franchise: true, allowOnline: true }), '');
+    assert.equal(blockedReason({ count: 3, franchise: true }), '');
     assert.equal(blockedReason({ count: 3 }), '');
 });
 

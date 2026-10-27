@@ -17,6 +17,7 @@ local Core = module(...)
 
 Core.sVersion = "3.2.1"
 Core.bBooted = false
+Core.bPatching = false
 
 -- lower-cased module name -> list of patch functions(tModule)
 Core.tPatches = {}
@@ -84,15 +85,15 @@ Core.Mark = function(self, sName)
 end
 
 -----------------------------------------------------------------------
--- Detailed log (debug builds; reference/debugging.md "Detailed log").
+-- Detailed log (debug builds).
 -- One free-text line per event in dbg\trace.log:
 --   <time> tid=<n> LOG lua#<seq> <area> <event> k=v k=v ...
 -- The game exports no Lua C API, so the line is spelled one byte at a time
 -- through dbg\lg_<hex>.dll "mark" functions (lg_clr first, lg_end writes
--- it; tools/trace/pz2_trace.c). Release builds have no dbg\, so this is a
--- no-op; anything missing turns it off for the session. Never raises.
+-- it; PZ2ModdingKit\trace\pz2_trace.c). Release builds have no dbg\, so this
+-- is a no-op; anything missing turns it off for the session. Never raises.
 -----------------------------------------------------------------------
-Core.nLogMax = 900            -- characters per line (the DLL keeps 1500)
+Core.nLogMax = 900            -- characters per line (the DLL keeps 4000)
 Core.nLogValueMax = 160       -- characters per value
 Core.nLogSeq = 0
 Core.tLogFns = {}             -- byte or "clr"/"end" -> mark function or false
@@ -403,6 +404,45 @@ Core._PatchModeHelper = function(self, ModeHelper)
 	end
 end
 
+-- Every feature, in boot order. Hub attaches the ones with an Attach to each
+-- mod view in this order: sView "hub" to the hub's view only, and the
+-- page's greeting (PZ2QoL_Hello) goes out before the first bAfterHello one.
+local tFeatures = {
+	{ "PZ2QoL.Errors" },
+	{ "PZ2QoL.Hub" },
+	{ "PZ2QoL.MarketPeek", sView = "hub" },
+	{ "PZ2QoL.Lister", sView = "hub" },
+	{ "PZ2QoL.PlayerStore" },
+	{ "PZ2QoL.Kin" },
+	{ "PZ2QoL.Guards" },
+	{ "PZ2QoL.SaveTrace" },
+	{ "PZ2QoL.BoxTrace" },
+	-- it sends its state as it attaches: after the greeting
+	{ "PZ2QoL.Autosave", bAfterHello = true },
+	{ "PZ2QoL.BoxRelease" },
+	{ "PZ2QoL.Education" },
+	-- typing "releasable" in the Animals tab's species search
+	{ "PZ2QoL.Releasable" },
+	{ "PZ2QoL.StorageSend" },
+	{ "PZ2QoL.TradeJump" },
+	{ "PZ2QoL.StorageFetch" },
+	-- the script profiler is a developer tool: debug builds only
+	{ "PZ2QoL.Profiler", bDebugOnly = true },
+}
+Core.tAttach = {} -- { oModule, sView, bAfterHello } of the features that booted, in order
+
+-- The require hook and the game's two private-require patches, once.
+Core.InstallPatching = function(self)
+	if self.bPatching then
+		return
+	end
+	self.bPatching = true
+	self:_InstallRequireHook()
+	self:Checkpoint("require_hook")
+	self:AddModulePatch("Environment.Environment", function(t) self:_PatchEnvironment(t) end)
+	self:AddModulePatch("GameHelpers.ModeHelper", function(t) self:_PatchModeHelper(t) end)
+end
+
 Core.Boot = function(self)
 	if self.bBooted then
 		return
@@ -411,15 +451,16 @@ Core.Boot = function(self)
 	pcall(function()
 		self.bTrace = global.package.loadlib(self.sTraceDir .. "cp_boot.dll", "*") ~= nil
 	end)
-	self:_InstallRequireHook()
-	self:Checkpoint("require_hook")
-	self:AddModulePatch("Environment.Environment", function(t) self:_PatchEnvironment(t) end)
-	self:AddModulePatch("GameHelpers.ModeHelper", function(t) self:_PatchModeHelper(t) end)
-	for _, sFeature in ipairs({ "PZ2QoL.Errors", "PZ2QoL.Hub", "PZ2QoL.MarketPeek", "PZ2QoL.Lister", "PZ2QoL.PlayerStore", "PZ2QoL.Kin", "PZ2QoL.Guards", "PZ2QoL.SaveTrace", "PZ2QoL.BoxTrace", "PZ2QoL.BoxRelease", "PZ2QoL.Autosave", "PZ2QoL.StorageSend", "PZ2QoL.TradeJump", "PZ2QoL.StorageFetch", "PZ2QoL.Profiler" }) do
-		-- the script profiler is a developer tool: debug builds only
-		if sFeature ~= "PZ2QoL.Profiler" or self.bTrace then
+	self:InstallPatching()
+	for _, tFeature in ipairs(tFeatures) do
+		local sFeature = tFeature[1]
+		if not tFeature.bDebugOnly or self.bTrace then
 			local bOk, sErr = pcall(function()
-				global.require(sFeature):Init(self)
+				local oModule = global.require(sFeature)
+				oModule:Init(self)
+				if type(oModule.Attach) == "function" then
+					self.tAttach[#self.tAttach + 1] = { oModule = oModule, sView = tFeature.sView, bAfterHello = tFeature.bAfterHello }
+				end
 			end)
 			self:Checkpoint(bOk and ("init_ok_" .. string.lower(sFeature)) or ("init_fail_" .. string.lower(sFeature)))
 			if not bOk then

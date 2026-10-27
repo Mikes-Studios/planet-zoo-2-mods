@@ -53,11 +53,11 @@
 .PZ2QoL_mdEngine { flex-shrink: 0; align-items: center; margin-right: 0.6rem; }
 .PZ2QoL_mdEnginePill { align-items: center; height: 1.7rem; padding: 0 0.75rem; border-radius: 0.85rem; font-size: 0.76rem; font-weight: bold; white-space: nowrap; }
 .PZ2QoL_mdEnginePill.ok { background-color: rgba(89, 105, 67, 0.16); color: var(--qol-olive); }
-.PZ2QoL_mdEnginePill.fallback { background-color: rgba(217, 134, 42, 0.18); color: var(--kp-kin-ink); }
+.PZ2QoL_mdEnginePill.off { background-color: rgba(217, 134, 42, 0.18); color: var(--kp-kin-ink); }
 
 .PZ2QoL_mdNotice { flex-shrink: 0; margin: 0.45rem 0.8rem 0 0.8rem; padding: 0.35rem 0.7rem; border-radius: 0.5rem; font-size: 0.8rem; background-color: var(--qol-chip); color: var(--qol-ink-soft); }
 .PZ2QoL_mdNotice.ok { background-color: rgba(89, 105, 67, 0.14); color: var(--qol-olive); }
-.PZ2QoL_mdNotice.warn { background-color: rgba(217, 134, 42, 0.16); color: var(--kp-kin-ink); }
+.PZ2QoL_mdNotice.warn { background-color: var(--kin-kin-soft); color: var(--kp-kin-ink); }
 
 .PZ2QoL_mdBody { flex: 1; min-height: 0; padding: 0.7rem 0.8rem 0.55rem 0.8rem; }
 
@@ -73,7 +73,7 @@
 .PZ2QoL_mdSpeciesMeta span { margin-right: 0.5rem; white-space: nowrap; }
 .PZ2QoL_mdSpeciesMeta .sell { color: var(--qol-olive); font-weight: bold; }
 .PZ2QoL_mdSpeciesMeta .listed { color: var(--qol-teal); }
-/* Quick trade only: the market won't take them (docs/PLAN-desk-quick-release.md) */
+/* Quick trade only: the market won't take them */
 .PZ2QoL_mdSpeciesMeta .quick { color: #B5651D; font-weight: bold; }
 .PZ2QoL_mdSpeciesMeta .chosen { color: var(--kp-kin-ink); font-weight: bold; }
 
@@ -121,13 +121,13 @@
 .PZ2QoL_mdCheck { flex-shrink: 0; align-items: center; margin: 0 0.5rem; }
 .PZ2QoL_mdRun.check { border-left-color: #B5651D; }
 .PZ2QoL_mdRun.check.done { border-left-color: var(--kin-ok); }
-.PZ2QoL_mdBox { width: 1.05rem; height: 1.05rem; border-radius: 0.25rem; border: 0.12rem solid rgba(114, 91, 74, 0.45); background-color: #FFFFFF; }
+.PZ2QoL_mdBox { width: 1.05rem; height: 1.05rem; border-radius: 0.25rem; border: 0.12rem solid var(--qol-ink-faint); background-color: #FFFFFF; }
 .PZ2QoL_mdBox.on { border-color: var(--qol-olive); background-color: var(--qol-olive); box-shadow: inset 0 0 0 0.16rem #FFFFFF; }
 .PZ2QoL_mdBox.off { opacity: 0.3; }
 .PZ2QoL_mdConf { width: 0.45rem; height: 0.45rem; margin-left: 0.35rem; border-radius: 0.225rem; background-color: rgba(114, 91, 74, 0.3); }
 .PZ2QoL_mdConf.c_high { background-color: var(--kin-ok); }
 .PZ2QoL_mdConf.c_medium { background-color: #C9A43A; }
-.PZ2QoL_mdConf.c_low { background-color: #D9862A; }
+.PZ2QoL_mdConf.c_low { background-color: var(--kin-kin); }
 .PZ2QoL_mdEmpty { flex-shrink: 0; justify-content: center; padding: 2rem 0; color: var(--qol-ink-faint); }
 
 /* ------------------------------------------------------------- the run */
@@ -142,10 +142,10 @@
 .PZ2QoL_mdTotal { font-size: 0.8rem; color: var(--qol-ink-soft); }
 .PZ2QoL_mdRun { flex-direction: column; margin-top: 0.7rem; padding: 0.55rem 0.65rem; border-radius: 0.6rem; background-color: #FFFFFF; border-left: 0.25rem solid var(--qol-teal); min-height: 0; flex-shrink: 1; overflow: hidden; }
 .PZ2QoL_mdRun.done { border-left-color: var(--kin-ok); }
-.PZ2QoL_mdRun.stopped, .PZ2QoL_mdRun.closed { border-left-color: #D9862A; }
+.PZ2QoL_mdRun.stopped, .PZ2QoL_mdRun.closed { border-left-color: var(--kin-kin); }
 .PZ2QoL_mdRunHead { flex-shrink: 0; align-items: center; font-weight: bold; }
 .PZ2QoL_mdRunCount { font-size: 0.78rem; color: var(--qol-ink-soft); }
-.PZ2QoL_mdProgress { flex-shrink: 0; height: 0.45rem; margin: 0.4rem 0; border-radius: 0.225rem; background-color: rgba(114, 91, 74, 0.14); }
+.PZ2QoL_mdProgress { flex-shrink: 0; height: 0.45rem; margin: 0.4rem 0; border-radius: 0.225rem; background-color: var(--qol-line); }
 .PZ2QoL_mdProgressFill { height: 100%; border-radius: 0.225rem; background-color: var(--qol-olive); }
 .PZ2QoL_mdRunNow { flex-shrink: 0; font-weight: bold; font-size: 0.82rem; white-space: nowrap; overflow: hidden; }
 .PZ2QoL_mdRunStep { flex-shrink: 0; flex-wrap: wrap; font-size: 0.76rem; line-height: 1.05rem; color: var(--qol-ink-soft); white-space: normal; }
@@ -215,8 +215,8 @@
 /* during a listing run: Animal Storage behind the desk is hidden entirely */
 .PZ2QoL_mdScrim.solid { background-color: rgb(46, 38, 30); }
 
-/* ---------------------------------------- Quick trade / Quick release (Phase 2)
-   docs/PLAN-desk-quick-release.md 4: the mode switch, the red quick panel,
+/* ---------------------------------------- Quick trade / Quick release
+   the mode switch, the red quick panel,
    the confirmation sheet and its Confirm */
 .PZ2QoL_mdSide .PZ2QoL_mdSeg.mode { align-self: stretch; margin: 0 0 0.55rem 0; padding: 0 0.15rem; justify-content: space-between; }
 .PZ2QoL_mdSeg.mode .PZ2QoL_mdSegLabel { display: none; }

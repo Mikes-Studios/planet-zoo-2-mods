@@ -4,14 +4,16 @@
 // Same technique as Animal Storage: the list's rows are filtered at the
 // data level (listfilter.js), and the toolbar is our own DOM placed over
 // the top of the Animals panel.
-import { applyZooFilters, DEFAULT_ZOO_FILTERS, geneScore, Gender, habitatCounts, speciesStats, zooFiltersActive } from '/js/mods/pz2qol/scores.js';
-import { get, readZooAnimal, ZOO_LIST_KEY } from '/js/mods/pz2qol/game.js';
-import { getListSource, refreshList, registerListFilter } from '/js/mods/pz2qol/listfilter.js';
+import { applyZooFilters, DEFAULT_ZOO_FILTERS, habitatCounts, storageSummary, UNHAPPY_WELFARE, zooFiltersActive } from '/js/mods/pz2qol/scores.js';
+import { get, readZooAnimal, reopenZooAnimals, ZOO_LIST_KEY } from '/js/mods/pz2qol/game.js';
+import { getListSource, liveListCount, rebindList, refreshList, registerListFilter } from '/js/mods/pz2qol/listfilter.js';
+import { dlog } from '/js/mods/pz2qol/debuglog.js';
 import { chip, collapser, next, safe, segmented, setChip } from '/js/mods/pz2qol/bars.js';
 // (segmented is used for sex/age)
-import { clear, h, icon, setClass, setText, tierOf } from '/js/mods/pz2qol/ui.js';
+import { clear, h, icon, isGamePopupOpen, setClass, setText, tierOf, visibleBox } from '/js/mods/pz2qol/ui.js';
+import { GAME_TOOLTIPS, GAME_WINDOWS, stepAside } from '/js/mods/pz2qol/stepaside.js';
 import { breadcrumb, reportError } from '/js/mods/pz2qol/errors.js';
-import { gameOnTop } from '/js/mods/pz2qol/cover.js';
+import { callAll } from '/js/mods/pz2qol/storecore.js';
 import { zooKinCounts, zooKinInfo } from '/js/mods/pz2qol/kinzoo.js';
 import { getKinModel, isBreedingHeatmapOn, onKin, setBreedingHeatmap } from '/js/mods/pz2qol/kin.js';
 import { habitatByName } from '/js/mods/pz2qol/kincore.js';
@@ -34,7 +36,7 @@ function setFilters(patch) {
         reportError('ui', 'Could not clear the animal selection', e);
     }
     refreshList(ZOO_LIST_KEY);
-    listeners.forEach(fn => fn(filters));
+    callAll(listeners, filters);
 }
 
 // Zoo row plus its Kin state (kinSeverity, kinCluster) for filter and sort.
@@ -54,30 +56,20 @@ registerListFilter(ZOO_LIST_KEY, {
             if (id != undefined) trigger('Management_ItemCheckboxToggled', id, true);
         },
     },
+    selection: {
+        isSelected: ctx => !!get(ctx, 'selected'),
+        deselect: ctx => engine.trigger('Management_ItemCheckboxToggled', get(ctx, 'id'), false),
+    },
 });
 
 function allAnimals() {
     return getListSource(ZOO_LIST_KEY).map(readWithKin);
 }
 
-// The kin data changed: re-filter if Kin drives the list.
-// With the Kin filter on, new kin data can hide rows (a pair given
-// contraception is no longer a risk). Hidden animals must never stay
-// selected for a bulk action: untick them (a local UI event, like the
-// player's own click on the tick box).
-function untickHiddenByKin() {
-    const source = getListSource(ZOO_LIST_KEY);
-    if (!source.length) return;
-    const visible = new Set(applyZooFilters(source.map(readWithKin), filters).map(a => a.id));
-    for (const ctx of source) {
-        const id = get(ctx, 'id');
-        if (id != undefined && !visible.has(id) && get(ctx, 'selected')) engine.trigger('Management_ItemCheckboxToggled', id, false);
-    }
-}
-
+// The kin data changed: re-filter if Kin drives the list (the re-filter
+// unticks the rows it hides).
 onKin(() => {
     try {
-        if (filters.kin && filters.kin != 'off') untickHiddenByKin();
         if ((filters.kin && filters.kin != 'off') || filters.sort == 'kin') refreshList(ZOO_LIST_KEY);
         if (bar) {
             bar.__sync();
@@ -211,22 +203,19 @@ function buildZooBar() {
         setChip(toggles.pregnant, filters.pregnant, undefined, animals.filter(a => a.isPregnant).length);
         setChip(toggles.alpha, filters.alpha, undefined, animals.filter(a => a.isAlpha).length);
         setChip(toggles.contracepted, filters.contracepted, undefined, animals.filter(a => a.contracepted).length);
-        setChip(toggles.unhappy, filters.unhappy, undefined, animals.filter(a => typeof a.welfare === 'number' && a.welfare < 1 / 3).length);
-        const scores = shown.map(geneScore).filter(v => v != null);
-        const avg = scores.length ? Math.round(scores.reduce((s, v) => s + v, 0) / scores.length) : null;
-        let pairs = 0;
-        for (const s of speciesStats(shown).values()) pairs += s.pairs;
+        setChip(toggles.unhappy, filters.unhappy, undefined, animals.filter(a => typeof a.welfare === 'number' && a.welfare < UNHAPPY_WELFARE).length);
+        const summary = storageSummary(shown);
         const riskPairs = kinCounts.pairs ? kinCounts.pairs.risk : null;
-        const sig = JSON.stringify([animals.length, shown.length, avg, pairs, riskPairs, zooFiltersActive(filters)]);
+        const sig = JSON.stringify([animals.length, summary, riskPairs, zooFiltersActive(filters)]);
         if (stats.__sig == sig && !force) return;
         stats.__sig = sig;
         clear(stats);
         const active = zooFiltersActive(filters);
-        stats.appendChild(stat(active ? `of ${animals.length}` : 'animals', String(shown.length), active ? 'accent' : ''));
-        stats.appendChild(stat('♂', String(shown.filter(a => a.gender == Gender.Male).length), 'male'));
-        stats.appendChild(stat('♀', String(shown.filter(a => a.gender == Gender.Female).length), 'female'));
-        stats.appendChild(stat('pairs', String(pairs)));
-        stats.appendChild(stat('avg gene', avg == null ? '–' : String(avg), tierOf(avg)));
+        stats.appendChild(stat(active ? `of ${animals.length}` : 'animals', String(summary.count), active ? 'accent' : ''));
+        stats.appendChild(stat('♂', String(summary.males), 'male'));
+        stats.appendChild(stat('♀', String(summary.females), 'female'));
+        stats.appendChild(stat('pairs', String(summary.pairs)));
+        stats.appendChild(stat('avg gene', summary.avgScore == null ? '–' : String(summary.avgScore), tierOf(summary.avgScore)));
         if (riskPairs != null) stats.appendChild(stat('inbreeding risks', String(riskPairs), riskPairs > 0 ? 'kinRisk' : 'kinOk'));
     };
     return bar;
@@ -238,16 +227,8 @@ let bar = null;
 let reserveStyle = null;
 let reservedPx = -1;
 let tick = 0;
-
-function visible(node) {
-    if (!node) return null;
-    const r = node.getBoundingClientRect();
-    if (r.width <= 0 || r.height <= 0) return null;
-    for (let n = node; n && n != document.body; n = n.parentNode) {
-        if (n.classList && n.classList.contains('hidden')) return null;
-    }
-    return r;
-}
+// the list was hidden or covered (a popup, the Zoopedia) at the last look
+let covered = true;
 
 // Room for the bar inside the Animals panel: padding on the panel root via
 // a stylesheet rule, so the panel's own position (our anchor) never moves.
@@ -262,15 +243,40 @@ function reserve(px) {
     reserveStyle.textContent = `.PZ2QoL .ManagementAnimals_root { padding-top: ${px}px; }`;
 }
 
+// The Zoopedia, opened from this list, ends the game's management mode and
+// closes to the world, leaving the screen up without its rows: the Animals
+// tab is opened again as its own navigation would.
+let zoopediaFromList = false;
+const REOPEN_CHECK_MS = 1500;
+
+function backFromZoopedia(screen) {
+    if (visibleBox(document.querySelector('.ZoopediaModule_root'))) {
+        if (screen) zoopediaFromList = true;
+        return;
+    }
+    if (!zoopediaFromList) return;
+    zoopediaFromList = false;
+    const rows = getListSource(ZOO_LIST_KEY).length;
+    dlog('ui', 'zoopedia_back', { rows });
+    if (rows > 0) return;
+    reopenZooAnimals();
+    // a list still bound to the deleted rows asks the data store again
+    setTimeout(() => {
+        const after = getListSource(ZOO_LIST_KEY).length;
+        if (after === 0) rebindList(ZOO_LIST_KEY);
+        dlog('ui', 'zoopedia_reopened', { rows: after, rebound: getListSource(ZOO_LIST_KEY).length, lists: liveListCount(ZOO_LIST_KEY) });
+    }, REOPEN_CHECK_MS);
+}
+
 function place() {
     tick++;
-    // a game popup (Compare Mates, Genealogy), modal or the Zoopedia opens
-    // over the management screen
-    const popupOpen = gameOnTop();
-    const r = popupOpen ? null : visible(document.querySelector('.ManagementAnimals_root'));
+    const screen = document.querySelector('.ManagementAnimals_root');
+    backFromZoopedia(screen);
+    const r = isGamePopupOpen() ? null : visibleBox(screen);
     if (!r) {
         if (bar) bar.style.display = 'none';
         if (reservedPx !== 0) reserve(0);
+        covered = true;
         return;
     }
     if (!bar) {
@@ -282,6 +288,18 @@ function place() {
     bar.style.left = `${Math.round(r.left + 6)}px`;
     bar.style.top = `${Math.round(r.top + 4)}px`;
     bar.style.width = `${Math.round(r.width - 12)}px`;
+    // the list's own tooltips (a welfare bar's breakdown) open over the bar
+    stepAside(bar, `${GAME_TOOLTIPS}, ${GAME_WINDOWS}`, 'zoo toolbar', screen);
+    // the rows can't be read while a window covers the list, and the filter
+    // shows none of them then; the game sees no change once it closes
+    const nowCovered = !!bar.__yieldedTo;
+    if (covered && !nowCovered) {
+        const active = zooFiltersActive(filters);
+        const rows = getListSource(ZOO_LIST_KEY).length;
+        if (active) refreshList(ZOO_LIST_KEY);
+        dlog('ui', 'list_back', { list: 'zoo animals', rows, after: getListSource(ZOO_LIST_KEY).length, lists: liveListCount(ZOO_LIST_KEY), filter: active });
+    }
+    covered = nowCovered;
     if (tick % 4 == 1 || !shown) bar.__updateSummary();
     reserve(bar.getBoundingClientRect().height + 10);
 }

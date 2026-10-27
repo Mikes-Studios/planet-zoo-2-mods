@@ -19,6 +19,7 @@
 --
 --  Actions, each started by one click in the page and doing exactly what
 --  the game's own buttons do:
+--    PZ2QoL_KinRename(id, name)    a newborn's name (animals:SetName, exhibits:SetExhibitAnimalNameUsingUID)
 --    PZ2QoL_KinContracept(id, on)  animals:SetUsingContraceptive (the
 --                                  management list's own toggle)
 --    PZ2QoL_KinLocate(id)          camera orbit + info panel (the
@@ -47,6 +48,7 @@ local ipairs   = global.ipairs
 local string   = global.string
 local table    = global.table
 local math     = global.math
+local ParkReads = global.require("PZ2QoL.ParkReads")
 
 local Kin = module(...)
 
@@ -60,11 +62,16 @@ Kin.nTickFresh = 1.0        -- seconds: the frame hook counts as alive
 Kin.nJobTimeout = 20        -- seconds: an unfinished job is dropped
 
 Kin.tStatic = {}            -- entity key -> { sGuid, tPar, tGenes }
-Kin.tExhibitUids = {}       -- "x<uid>" -> the exhibit animal's UID exactly as the game gave it
-Kin.tAncestors = {}         -- guid -> { parent guids } or false
+-- exhibit key ("x" .. UID text) -> the game's UID: a GUID, which its text can't give back
+Kin.tExhibitUid = {}
+Kin.tAncestors = {}         -- park world: guid -> { parent guids }
+Kin.tStorageAncestors = {}  -- hub Animal Storage: guid -> { parent guids }
 Kin.tViews = global.setmetatable({}, { __mode = "k" })
 Kin.tLastSent = global.setmetatable({}, { __mode = "k" })
 Kin.nSeq = 0
+Kin.sTradeSeen = nil         -- the trade centre counts last logged (_LogTradeCentre)
+Kin.bEngineCallsLogged = nil -- this park's engine calls are in the log (_LogEngineCalls)
+Kin.tWelfareLogged = {}     -- species whose welfare curve is in the log this session (_LogWelfareCurve)
 Kin.tJob = nil
 Kin.nLastTick = nil
 Kin.oHeatMapManager = nil
@@ -79,6 +86,16 @@ local function mark(sName)
 	if Core then
 		Core:Mark(sName)
 	end
+end
+
+-- a line in the debug build's log (Core:Log)
+local function logEvent(sArea, sEvent, tData)
+	pcall(function()
+		local Core = global.package.loaded["pz2qol.core"]
+		if Core and Core.Log then
+			Core:Log(sArea, sEvent, tData)
+		end
+	end)
 end
 
 local function now()
@@ -226,6 +243,22 @@ local function parentList(t, fnMap)
 	return out
 end
 
+-- {g1, g2} from animals:GetParents(guid), or nil when the game gave no answer.
+local function readParents(animals, guid)
+	local bOk, tPar = pcall(animals.GetParents, animals, guid)
+	if bOk and type(tPar) == "table" then
+		return parentList(tPar)
+	end
+	return nil
+end
+
+-- Kin._Ancestors' fnParents for guids kept as text
+local function ancestorParents(animals)
+	return function(g)
+		return readParents(animals, tonumber(g) or g)
+	end
+end
+
 -- Alleles of one stat as a 12 character string (or dotted when an allele
 -- is longer than one character).
 local function alleleString(t)
@@ -357,21 +390,22 @@ Kin._Static = function(self, animals, nEntity)
 	local bOk, guid = pcall(animals.EntityIDToAnimalGUID, animals, nEntity)
 	local sGuid = bOk and guidString(guid) or ""
 	local t = self.tStatic[sKey]
-	if t ~= nil and t.sGuid == sGuid then
-		return t
+	if t == nil or t.sGuid ~= sGuid then
+		t = { sGuid = sGuid, tPar = array() }
+		local bG, tGenes = pcall(animals.GetGenes, animals, nEntity)
+		if bG then
+			t.tGenes = geneStrings(tGenes)
+		end
+		self.tStatic[sKey] = t
 	end
-	t = { sGuid = sGuid, tPar = array() }
-	if sGuid ~= "" then
-		local bP, tPar = pcall(animals.GetParents, animals, guid)
-		if bP then
-			t.tPar = parentList(tPar)
+	-- unanswered parents are asked again next scan, never kept as "no parents"
+	if sGuid ~= "" and not t.bParentsRead then
+		local tPar = readParents(animals, guid)
+		if tPar ~= nil then
+			t.tPar = tPar
+			t.bParentsRead = true
 		end
 	end
-	local bG, tGenes = pcall(animals.GetGenes, animals, nEntity)
-	if bG then
-		t.tGenes = geneStrings(tGenes)
-	end
-	self.tStatic[sKey] = t
 	return t
 end
 
@@ -395,6 +429,69 @@ local function mateIds(animals, nEntity)
 		end
 	end
 	return out, bMono, nFirst
+end
+
+-- The game's count of animals at the trade centre beside the ones it lists
+-- as live (the scan's source): after a zoo load, animals waiting there may
+-- be records only until the game's Move screen creates them
+-- (CreateAnimalInTradeCentreFromGUID), which the scan cannot see. Logged
+-- when either changes.
+Kin._LogTradeCentre = function(self, tAPIs, nListed)
+	local nMax, nNow = ParkReads.TradeCentreRoom(tAPIs.park)
+	local sKey = tostring(nNow) .. "/" .. tostring(nListed)
+	if sKey == self.sTradeSeen then
+		return
+	end
+	self.sTradeSeen = sKey
+	logEvent("kin", "trade_centre", { game = nNow, max = nMax, live = nListed })
+end
+
+-- An engine API's calls whose names hold one of the words (its own table,
+-- else its metatable's __index), sorted, as one string.
+local function engineCalls(oApi, tWords)
+	local tOut = {}
+	local function scan(t)
+		if type(t) ~= "table" then
+			return
+		end
+		for k, v in pairs(t) do
+			if type(k) == "string" and type(v) == "function" then
+				local sLow = string.lower(k)
+				for _, sWord in ipairs(tWords) do
+					if string.find(sLow, sWord, 1, true) then
+						tOut[#tOut + 1] = k
+						break
+					end
+				end
+			end
+		end
+	end
+	pcall(scan, oApi)
+	pcall(function()
+		local tMeta = global.getmetatable(oApi)
+		if tMeta then
+			scan(tMeta.__index)
+		end
+	end)
+	table.sort(tOut)
+	return table.concat(tOut, " ")
+end
+
+-- Once per park: the engine calls that may say where an animal record is
+-- (trade centre or storage) and bring one to life, for the trade centre's
+-- records the scan cannot see (_LogTradeCentre).
+Kin._LogEngineCalls = function(self, tAPIs)
+	if self.bEngineCallsLogged then
+		return
+	end
+	self.bEngineCallsLogged = true
+	local tWords = { "trade", "location", "stor", "record", "guid" }
+	logEvent("kin", "engine_calls", {
+		planetHub = engineCalls(api.planetHub, tWords),
+		animals = engineCalls(tAPIs.animals, tWords),
+		facilities = engineCalls(tAPIs.facilities, tWords),
+		helpers = engineCalls(tAPIs.animalsDataHelpers, tWords),
+	})
 end
 
 Kin._StartPark = function(self, oUI, sReason)
@@ -440,19 +537,24 @@ Kin._StartPark = function(self, oUI, sReason)
 	-- animals waiting at the trade centre (bought, returned from storage, sent
 	-- there) are NOT in the Habitat list; the game reads this second list for
 	-- them (helpers.notificationtasks CheckNoStaffForDelivery)
+	local nTradeListed = nil
 	pcall(function()
 		local helpers = tAPIs.animalsDataHelpers
 		local nList = helpers.AnimalListType_HabitatInTradeCenterWithEntities
 		if nList == nil then
 			return
 		end
+		nTradeListed = 0
 		for _, e in ipairs(helpers:GetAllAnimalEntities(nList)) do
+			nTradeListed = nTradeListed + 1
 			if not tSeen[e] then
 				tSeen[e] = true
 				tIDs[#tIDs + 1] = e
 			end
 		end
 	end)
+	self:_LogTradeCentre(tAPIs, nTradeListed)
+	self:_LogEngineCalls(tAPIs)
 	local tExhibitIDs = {}
 	pcall(function()
 		local tAll = tAPIs.exhibits:GetAllAnimalIDs()
@@ -599,7 +701,7 @@ Kin._BondStep = function(self, tJob, animals, nBudget)
 					tCands[#tCands + 1] = o
 				end
 			end
-			b.tRec.bond = { mate = sMate, ring = false, lock = array() }
+			b.tRec.bond = { mate = sMate, ring = false, lock = array(), unk = array() }
 			tJob.tBondJobs[#tJob.tBondJobs + 1] = { b = b, tCands = tCands }
 		end
 	end
@@ -636,10 +738,11 @@ Kin._BondStep = function(self, tJob, animals, nBudget)
 		end
 		while nDone < nBudget and tJob.nBondCand <= #job.tCands do
 			local o = job.tCands[tJob.nBondCand]
-			-- a failed call is not a lock: the pair stays a risk
-			if icon(b.e, o.e) == "IconLock" then
-				local tLock = b.tRec.bond.lock
-				tLock[#tLock + 1] = o.tRec.id
+			-- a failed call is unknown, not "no lock" (kincore bondHold)
+			local sIcon = icon(b.e, o.e)
+			local tList = sIcon == "IconLock" and b.tRec.bond.lock or sIcon == nil and b.tRec.bond.unk or nil
+			if tList ~= nil then
+				tList[#tList + 1] = o.tRec.id
 			end
 			nDone = nDone + 1
 			tJob.nBondCand = tJob.nBondCand + 1
@@ -718,9 +821,49 @@ local function ageQuarter(animals, e)
 	return bOk and type(n) == "number" and n or nil
 end
 
-local function hasTransportJob(animals, e)
-	local bOk, t = pcall(animals.GetAnimalTransportData, animals, e)
-	return bOk and type(t) == "table" and t.bHasTransportJob == true
+-- The game's own juvenile block on Release and Quick trade (the info panel's
+-- GetRelocatePreventers(e).bJuvenile). It lifts a few seconds after the age
+-- group turns adult, and moving the animal before then can go wrong, so an
+-- animal counts as juvenile until it does. nil: the game did not answer.
+local function juvenileBlock(animals, e)
+	local bOk, t = pcall(animals.GetRelocatePreventers, animals, e)
+	if not bOk or type(t) ~= "table" then
+		return nil
+	end
+	return t.bJuvenile == true
+end
+
+local function logGrowth(sEvent, e, sName)
+	logEvent("grow", sEvent, { id = idString(e), name = sName })
+end
+
+-- An adult by its age group whose juvenile block has not lifted yet. Asked
+-- until it lifts once (tStatic.bGrown), so settled adults cost one call. No
+-- answer counts as still blocked: an animal is never treated as grown early.
+local function stillJuvenile(animals, e, tStatic, sName)
+	if tStatic.bGrown then
+		return false
+	end
+	local bBlocked = juvenileBlock(animals, e)
+	if bBlocked == nil then
+		if not tStatic.bBlockUnknown then
+			tStatic.bBlockUnknown = true
+			logGrowth("block_unknown", e, sName)
+		end
+		return true
+	end
+	if bBlocked then
+		if not tStatic.bBlockSeen then
+			tStatic.bBlockSeen = true
+			logGrowth("block_held", e, sName)
+		end
+		return true
+	end
+	tStatic.bGrown = true
+	if tStatic.bBlockSeen then
+		logGrowth("block_lifted", e, sName)
+	end
+	return false
 end
 
 -- The age (in GetAge years) at which a juvenile counts as an adult: the info
@@ -847,7 +990,7 @@ Kin._AddParkAnimal = function(self, tJob, animals, e, t)
 			end
 		end
 	end
-	local bJuvenile = tJob.nJuvenile ~= nil and t.nAgeGroup == tJob.nJuvenile
+	local bJuvenile = (tJob.nJuvenile ~= nil and t.nAgeGroup == tJob.nJuvenile) or stillJuvenile(animals, e, tStatic, t.sName)
 	local tRec = {
 		id = idString(e),
 		key = "animal_" .. idString(e),
@@ -865,7 +1008,7 @@ Kin._AddParkAnimal = function(self, tJob, animals, e, t)
 		lt = sAway or (h ~= nil and "habitat" or locationKind(animals, t, tJob)),
 		-- away from its assigned habitat for now (vet, quarantine, transit)
 		away = sAway,
-		moving = hasTransportJob(animals, e),
+		moving = ParkReads.HasTransportJob(animals, e),
 		-- in a transport box (the Animals list's bBoxed): the boxed-animal alert
 		boxed = t.bBoxed == true or nil,
 		-- sick or injured: quarantine before the trade centre (kinmoves.js)
@@ -913,16 +1056,24 @@ Kin._AddParkAnimal = function(self, tJob, animals, e, t)
 	end
 end
 
+-- An exhibit animal's key, its UID kept to ask the game about it later
+-- (an ancestor no longer in the zoo is only known by this key)
+Kin._ExhibitKey = function(self, uid)
+	local sKey = "x" .. idString(uid)
+	self.tExhibitUid[sKey] = uid
+	return sKey
+end
+
 Kin._AddExhibitAnimal = function(self, tJob, exhibits, uid, t)
 	local sKey = "x" .. idString(uid)
-	self.tExhibitUids[sKey] = uid
 	local tStatic = self.tStatic[sKey]
 	if tStatic == nil then
-		tStatic = { sGuid = sKey, tPar = array() }
+		-- uid: the game's own value (a GUID), which its text form can't give back
+		tStatic = { sGuid = sKey, tPar = array(), uid = uid }
 		for i = 0, 1 do
 			local bOk, p = pcall(exhibits.GetAnimalFamilyMemberUID, exhibits, uid, i)
 			if bOk and known(p) then
-				tStatic.tPar[#tStatic.tPar + 1] = "x" .. idString(p)
+				tStatic.tPar[#tStatic.tPar + 1] = self:_ExhibitKey(p)
 			end
 		end
 		table.sort(tStatic.tPar)
@@ -971,8 +1122,10 @@ Kin._AddExhibitAnimal = function(self, tJob, exhibits, uid, t)
 end
 
 -- Parents of ancestors who are not in the zoo, a few generations up. Uses
--- fnParents(guid) -> list, cached per guid.
-Kin._Ancestors = function(self, tAnimals, tPresent, fnParents)
+-- fnParents(guid) -> list | nil (no answer). tCache (one per world: guid ->
+-- parents) keeps only answers that name parents, so a failed or empty lookup
+-- is asked again next time instead of cutting the line above it for good.
+Kin._Ancestors = function(self, tAnimals, tPresent, fnParents, tCache)
 	local tAnc = {}
 	local tFrontier = {}
 	for _, a in ipairs(tAnimals) do
@@ -986,10 +1139,12 @@ Kin._Ancestors = function(self, tAnimals, tPresent, fnParents)
 	for _ = 1, self.nAncestorDepth do
 		local tNext = {}
 		for _, g in ipairs(tFrontier) do
-			local tPar = self.tAncestors[g]
+			local tPar = tCache[g]
 			if tPar == nil then
-				tPar = fnParents(g) or false
-				self.tAncestors[g] = tPar
+				tPar = fnParents(g)
+				if tPar ~= nil and #tPar > 0 then
+					tCache[g] = tPar
+				end
 			end
 			-- a lookup that failed is left out (unknown), not sent as "no parents"
 			tAnc[g] = tPar or false
@@ -1020,9 +1175,10 @@ Kin._FinishPark = function(self)
 	self.tJob = nil
 	local animals = tJob.tAPIs.animals
 	local exhibits = tJob.tAPIs.exhibits
+	local fnGuidParents = ancestorParents(animals)
 	local tAnc = self:_Ancestors(tJob.tAnimals, tJob.tPresent, function(g)
 		if string.sub(g, 1, 1) == "x" then
-			local uid = tonumber(string.sub(g, 2))
+			local uid = self.tExhibitUid[g] or tonumber(string.sub(g, 2))
 			if uid == nil or exhibits == nil then
 				return nil
 			end
@@ -1030,17 +1186,13 @@ Kin._FinishPark = function(self)
 			for i = 0, 1 do
 				local bOk, p = pcall(exhibits.GetAnimalFamilyMemberUID, exhibits, uid, i)
 				if bOk and known(p) then
-					out[#out + 1] = "x" .. idString(p)
+					out[#out + 1] = self:_ExhibitKey(p)
 				end
 			end
 			return out
 		end
-		local bOk, tPar = pcall(animals.GetParents, animals, tonumber(g) or g)
-		if bOk and type(tPar) == "table" then
-			return parentList(tPar)
-		end
-		return nil
-	end)
+		return fnGuidParents(g)
+	end, self.tAncestors)
 	local tHabitats = array()
 	for _, h in ipairs(tJob.tHabitatOrder) do
 		if type(h) == "string" and (string.sub(h, 1, 3) == "xh:" or string.sub(h, 1, 3) == "xe:") then
@@ -1055,6 +1207,8 @@ Kin._FinishPark = function(self)
 		scope = "park",
 		speciesFacts = self:_SpeciesFacts(tJob),
 		mode = self:_GameMode(tJob.tAPIs),
+		rules = self:_AnimalRules(),
+		reserve = self:_IsReserve(tJob.tAPIs),
 		park = self:_ParkName(tJob.tAPIs),
 		tradeCentre = self:_TradeCentre(tJob.tAPIs),
 		habitats = tHabitats,
@@ -1219,8 +1373,7 @@ Kin._SpeciesFacts = function(self, tJob)
 end
 
 -- 'franchise' (online Franchise zoo), 'offline' (Sandbox, Career,
--- Challenge...) or 'unknown'. The page only runs whole move plans in
--- 'offline' unless the player allows it.
+-- Challenge...) or 'unknown', by franchise:GetPlanetHubType().
 Kin._GameMode = function(self, tAPIs)
 	local sMode = "unknown"
 	pcall(function()
@@ -1231,6 +1384,27 @@ Kin._GameMode = function(self, tAPIs)
 		end
 	end)
 	return sMode
+end
+
+-- The park's sandbox switches the breeding plan follows (Helpers.AnimalUtils
+-- reads them the same way): social groups and overcrowding, each true unless
+-- the park turned it off. Only while a park runs (the scan's caller).
+Kin._AnimalRules = function(self)
+	local tOut = {}
+	pcall(function()
+		local ParkSettingsData = global.require("Helpers.ParkSettingsData")
+		local scenarioManager = api.world.GetScript(api.world.GetActive()).tEnvironment:RequireInterface("Interfaces.IScenarioManager")
+		tOut.socialGroups = scenarioManager:GetScenarioSetting(ParkSettingsData.tSettings.EnableSocialGroups) ~= false
+		tOut.overcrowding = scenarioManager:GetScenarioSetting(ParkSettingsData.tSettings.EnableOvercrowding) ~= false
+	end)
+	return tOut
+end
+
+-- A wildlife reserve rather than a zoo, as the game's own edit modes tell
+-- (wildterritory:IsWildTerritoryCreationEnabled, multiselectmode.lua 1.0.5).
+Kin._IsReserve = function(self, tAPIs)
+	local bOk, b = pcall(function() return tAPIs.wildterritory:IsWildTerritoryCreationEnabled() end)
+	return bOk and b == true
 end
 
 -- The park's name: the page keeps the player's habitat assignments per park.
@@ -1268,13 +1442,20 @@ Kin._HabitatPrints = function(self, tAPIs, tHabs)
 	return tOut
 end
 
--- The first trade centre ({ id, name }) or nil, as the game's own
+-- The zoo's trade centre ({ id, name }) or nil: a valid one first
+-- (GetTradeCentres: entity -> bValid), else the first, as the game's own
 -- "send to trade centre" picks it.
 Kin._TradeCentre = function(self, tAPIs)
 	local tOut = nil
 	pcall(function()
 		local tCentres = tAPIs.facilities:GetTradeCentres()
 		local nId = global.next(tCentres)
+		for nCentre, bValid in pairs(tCentres) do
+			if bValid == true then
+				nId = nCentre
+				break
+			end
+		end
 		if nId ~= nil then
 			tOut = { id = idString(nId), name = entityName(nId) or "Trade centre" }
 		end
@@ -1357,11 +1538,7 @@ Kin.Storage = function(self, oUI, sIds)
 		-- 2 = GUID (CompareMatesUIUtils.nGUID): what storage animals are
 		if bOk and nID ~= nil and nType == 2 then
 			local sGuid = guidString(nID)
-			local tRec = { id = sID, guid = sGuid, par = array() }
-			local bP, tPar = pcall(animals.GetParents, animals, nID)
-			if bP then
-				tRec.par = parentList(tPar)
-			end
+			local tRec = { id = sID, guid = sGuid, par = readParents(animals, nID) or array() }
 			local bG, tGenes = pcall(animals.GetMarketAnimalGenes, animals, nID, nType)
 			if bG then
 				tRec.genes = geneStrings(tGenes)
@@ -1372,13 +1549,7 @@ Kin.Storage = function(self, oUI, sIds)
 			end
 		end
 	end
-	local tAnc = self:_Ancestors(tAnimals, tPresent, function(g)
-		local bOk, tPar = pcall(animals.GetParents, animals, tonumber(g) or g)
-		if bOk and type(tPar) == "table" then
-			return parentList(tPar)
-		end
-		return nil
-	end)
+	local tAnc = self:_Ancestors(tAnimals, tPresent, ancestorParents(animals), self.tStorageAncestors)
 	self.nSeq = self.nSeq + 1
 	self:_SendSnapshot(oUI, { v = self.nVersion, seq = self.nSeq, scope = "storage", habitats = array(), animals = tAnimals, anc = tAnc })
 end
@@ -1386,16 +1557,13 @@ end
 -----------------------------------------------------------------------
 -- Actions (one per click)
 -----------------------------------------------------------------------
-local function entityOf(sId)
+-- An animal's id as the game takes it: entity id, or (exhibit, "x" ids)
+-- nil and its UID as the scan read it
+Kin._EntityOf = function(self, sId)
 	sId = tostring(sId or "")
 	if string.sub(sId, 1, 1) == "x" then
-		-- the UID the scan got: a number, or a GUID that tonumber can't read
-		-- (3.2.0 player log: "bad animal id x01a1583f-37da-...")
-		local uid = Kin.tExhibitUids[sId]
-		if uid == nil then
-			uid = tonumber(string.sub(sId, 2))
-		end
-		return nil, uid
+		local tStatic = self.tStatic[sId]
+		return nil, (tStatic and tStatic.uid) or tonumber(string.sub(sId, 2))
 	end
 	return tonumber(sId), nil
 end
@@ -1405,7 +1573,7 @@ Kin.Contracept = function(self, oUI, sId, bOn)
 	if tAPIs == nil then
 		return self:_SendState(oUI, "failed", "No park is loaded.")
 	end
-	local e, uid = entityOf(sId)
+	local e, uid = self:_EntityOf(sId)
 	local bOk, sErr
 	if uid ~= nil then
 		bOk, sErr = pcall(tAPIs.exhibits.SetExhibitAnimalUsingContraceptiveUsingUID, tAPIs.exhibits, uid, bOn == true)
@@ -1420,9 +1588,32 @@ Kin.Contracept = function(self, oUI, sId, bOn)
 	self:_SendState(oUI, "contracept", tostring(sId))
 end
 
+-- A newborn's name (kinnames.js), as the game's info panels rename one
+Kin.Rename = function(self, oUI, sId, sName)
+	local tAPIs = self:_ParkWorld()
+	if tAPIs == nil then
+		return self:_SendState(oUI, "failed", "No park is loaded.")
+	end
+	local e, uid = self:_EntityOf(sId)
+	local bOk, sErr
+	if type(sName) ~= "string" or sName == "" then
+		bOk, sErr = false, "no name"
+	elseif uid ~= nil then
+		bOk, sErr = pcall(tAPIs.exhibits.SetExhibitAnimalNameUsingUID, tAPIs.exhibits, uid, sName)
+	elseif e ~= nil then
+		bOk, sErr = pcall(tAPIs.animals.SetName, tAPIs.animals, e, sName)
+	else
+		bOk, sErr = false, "bad animal id " .. tostring(sId)
+	end
+	if not bOk then
+		return self:_SendState(oUI, "failed", "A newborn could not be renamed: " .. tostring(sErr))
+	end
+	logEvent("kin", "renamed", { id = tostring(sId), name = sName })
+end
+
 Kin.Locate = function(self, oUI, sId)
 	local tAPIs = self:_ParkWorld()
-	local e = entityOf(sId)
+	local e = self:_EntityOf(sId)
 	if tAPIs == nil or e == nil then
 		return self:_SendState(oUI, "failed", "This animal cannot be located.")
 	end
@@ -1532,7 +1723,7 @@ Kin.LocatePlace = function(self, oUI, sPlace, sSample)
 	if sPrefix == "xe:" then
 		tTries[#tTries + 1] = { tonumber(string.sub(sPlace, 4)), "exhibit" }
 	elseif sPrefix == "xh:" then
-		local _, uid = entityOf(sSample)
+		local _, uid = self:_EntityOf(sSample)
 		pcall(function()
 			local e = uid and tAPIs.exhibits:ExhibitAnimalUIDToEntityID(uid)
 			local x = e and tAPIs.exhibits:GetAnimalParentExhibit(e)
@@ -1553,7 +1744,7 @@ Kin.LocatePlace = function(self, oUI, sPlace, sSample)
 			tTries[#tTries + 1] = { h, "entity" }
 		end
 		-- last: one of its animals (the camera at least gets there)
-		local e = entityOf(sSample)
+		local e = self:_EntityOf(sSample)
 		if e ~= nil then
 			pcall(function()
 				local t = tAPIs.animals:GetUIAnimalListDataForIDs({ e })
@@ -1701,6 +1892,30 @@ Kin.Destinations = function(self, oUI, sReq, sIds)
 	answer(tOut)
 end
 
+-- api.planetHub.IsPlayerAnimalMovementEnabled(): false while a scenario or
+-- event restricts the player's animal moves, nil when the game does not say.
+local function playerMovementEnabled()
+	local bOk, b = pcall(function() return api.planetHub.IsPlayerAnimalMovementEnabled() end)
+	if bOk and type(b) == "boolean" then
+		return b
+	end
+	return nil
+end
+
+-- While moves are restricted the game still lets an animal through when
+-- IsMovementForAnimalAllowed says so for that destination type
+-- (ScenarioMovementType_<sType>), as AnimalMovementEditMode asks it (1.0.5).
+local function movementAllowed(animals, e, sType)
+	if playerMovementEnabled() ~= false then
+		return true
+	end
+	local bOk, b = pcall(function()
+		local hub = api.planetHub
+		return hub.IsMovementForAnimalAllowed(e, animals:EntityIDToAnimalGUID(e), hub["ScenarioMovementType_" .. sType])
+	end)
+	return bOk and b == true
+end
+
 -- ONE animal to a habitat (habitat entity id) or the trade centre
 -- ("trade:<id>" / "trade:auto"): the game's own Move sequence, or its own
 -- Send to Trade Centre. Never more than one.
@@ -1714,7 +1929,7 @@ Kin.Move = function(self, oUI, sReq, sId, sTo)
 		return answer(false, "No park is loaded.")
 	end
 	local animals = tAPIs.animals
-	local e = entityOf(sId)
+	local e = self:_EntityOf(sId)
 	if e == nil then
 		return answer(false, "Only habitat animals can be moved from here (exhibit animals: use the game's own Move).")
 	end
@@ -1725,7 +1940,8 @@ Kin.Move = function(self, oUI, sReq, sId, sTo)
 	-- the "passed quarantine" notice.
 	if string.sub(sTo, 1, 7) == "tradeq:" then
 		sTo = "trade:" .. string.sub(sTo, 8)
-		if sickOf(animals, e) == true and call(animals, "CouldRequestTransportToQuarantine", e) ~= false then
+		if sickOf(animals, e) == true and call(animals, "CouldRequestTransportToQuarantine", e) ~= false
+			and movementAllowed(animals, e, "Quarantine") then
 			local bQ = pcall(animals.RequestTransportToQuarantine, animals, e)
 			if bQ then
 				mark("kin_move_quarantine")
@@ -1747,6 +1963,9 @@ Kin.Move = function(self, oUI, sReq, sId, sTo)
 	if nDest == nil then
 		return answer(false, "Unknown destination.")
 	end
+	if not movementAllowed(animals, e, bTrade and "TradeCentre" or "Habitat") then
+		return answer(false, "The game has animal moves switched off here (a scenario or event restricts them), so nothing was moved. Try again once the game's own Move button works for this animal.")
+	end
 	-- the animal (AnimalMovementEditMode.VerifyHabitatAnimal, the info
 	-- panel's Move button conditions)
 	if call(animals, "IsAlive", e) == false then
@@ -1755,20 +1974,27 @@ Kin.Move = function(self, oUI, sReq, sId, sTo)
 	if call(animals, "IsEscaped", e) == true and call(animals, "IsAnimalBoxed", e) ~= true then
 		return answer(false, "This animal has escaped.")
 	end
-	if call(animals, "IsBoxAnimating", e) == true or call(animals, "IsBoxingClaimed", e) == true or hasTransportJob(animals, e) then
+	if ParkReads.IsBeingMoved(animals, e) then
 		return answer(false, "This animal is already being moved.")
 	end
 	if bTrade then
 		-- the info panel's / habitat gate's Send to Trade Centre: the game picks
 		-- the trade centre and books the keeper itself. (A plain transport
 		-- request to the trade centre is accepted but never carried out.)
-		local park = tAPIs.park
-		local nMax, nNow = call(park, "GetTradeCentreMaxCapacity"), call(park, "GetNumberOfAnimalsInTradeCentre")
-		if type(nMax) == "number" and type(nNow) == "number" and nNow >= nMax then
+		local nMax, nNow, bFull = ParkReads.TradeCentreRoom(tAPIs.park)
+		if bFull then
 			return answer(false, "The trade centre is full (" .. nNow .. " of " .. nMax .. ").")
 		end
 		if call(animals, "CanSendAnimalToTradeCentre", e) == false then
 			return answer(false, "The game won't send this animal to the trade centre right now.")
+		end
+		-- never a pregnant or young animal, read at this moment (the mod's scan
+		-- can be a second old): a calf born there never grows up
+		local tPrev = call(animals, "GetRelocatePreventers", e)
+		if type(tPrev) == "table" and (tPrev.bPregnant == true or tPrev.bJuvenile == true) then
+			mark("kin_move_kept_home")
+			return answer(false, tPrev.bPregnant == true and "She is pregnant: she gives birth in her habitat first."
+				or "It is still young: it grows up in its habitat first.")
 		end
 		if call(animals, "AttemptToSendToTradeCentre", e) ~= true then
 			return answer(false, "The game refused to send it to the trade centre.")
@@ -2030,6 +2256,31 @@ local function sexMaxFrom(t, tSex, nDepth)
 end
 
 -- sHabs: habitat ids (comma separated) to measure for this species.
+-- The log only, once per species a session: what welfare costs a pregnancy
+-- (the game's own chance at welfare 0..1, both fertility genes at 4 of 6), and each
+-- adult's welfare now (entity:welfare, males then females), to read how
+-- far a pair that is not thriving falls short.
+Kin._LogWelfareCurve = function(self, animals, sSpecies, nSpeciesFert, nBonus)
+	if self.tWelfareLogged[sSpecies] then
+		return
+	end
+	self.tWelfareLogged[sSpecies] = true
+	local tCurve = {}
+	for _, w in ipairs({ 0, 0.25, 0.5, 0.6, 0.7, 0.8, 0.9, 1 }) do
+		local p = call(animals, "CalculateProbabilityOfBreedingEvent", w, w, 4, 4, nSpeciesFert, nBonus)
+		tCurve[#tCurve + 1] = tostring(w) .. "=" .. (type(p) == "number" and string.format("%.4f", p) or "?")
+	end
+	local tNow = {}
+	local tSplit = call(animals, "GetAllAdultsOfSpeciesSplitByGender", sSpecies)
+	for nIdx, sSex in ipairs({ "m", "f" }) do
+		for _, e in ipairs((type(tSplit) == "table" and tSplit[nIdx]) or {}) do
+			local w = call(animals, "GetWelfare", e)
+			tNow[#tNow + 1] = sSex .. idString(e) .. ":" .. (type(w) == "number" and string.format("%.2f", w) or "?")
+		end
+	end
+	logEvent("kin", "welfare_curve", { species = sSpecies, curve = global.table.concat(tCurve, " "), adults = global.table.concat(tNow, " ") })
+end
+
 Kin.SpeciesInfo = function(self, oUI, sReq, sSpecies, sHabs)
 	local tAPIs = self:_ParkWorld()
 	local function answer(t)
@@ -2083,6 +2334,7 @@ Kin.SpeciesInfo = function(self, oUI, sReq, sSpecies, sHabs)
 			tTable[#tTable + 1] = tRow
 		end
 		tOut.conception = tTable
+		self:_LogWelfareCurve(animals, sSpecies, nSpeciesFert, nBonus)
 	end
 	for sHab in string.gmatch(tostring(sHabs or ""), "[^,]+") do
 		local h = tonumber(sHab)
@@ -2172,6 +2424,9 @@ Kin.StoredAdults = function(self, oUI, sReq, sSpecies)
 	local tList = array()
 	local tPresent = {}
 	local nSeen = 0
+	-- which of them the park world has as a live animal (one waiting at the
+	-- trade centre may be a record only after a zoo load; _LogTradeCentre)
+	local tLive, tRecord, tListed = array(), array(), array()
 	for nIdx = 1, 2 do
 		local tGuids = tSplit[nIdx]
 		if type(tGuids) == "table" then
@@ -2186,15 +2441,18 @@ Kin.StoredAdults = function(self, oUI, sReq, sSpecies)
 					local tStatic = self.tStored[sGuid]
 					if tStatic == nil then
 						tStatic = { tPar = array() }
-						local bP, tPar = pcall(animals.GetParents, animals, guid)
-						if bP then
-							tStatic.tPar = parentList(tPar)
-						end
 						local bG, tGenes = pcall(animals.GetMarketAnimalGenes, animals, guid, 2)
 						if bG then
 							tStatic.tGenes = geneStrings(tGenes)
 						end
 						self.tStored[sGuid] = tStatic
+					end
+					if not tStatic.bParentsRead then
+						local tPar = readParents(animals, guid)
+						if tPar ~= nil then
+							tStatic.tPar = tPar
+							tStatic.bParentsRead = true
+						end
 					end
 					local tG = type(tData.tGenes) == "table" and tData.tGenes or nil
 					tList[#tList + 1] = {
@@ -2205,24 +2463,30 @@ Kin.StoredAdults = function(self, oUI, sReq, sSpecies)
 						-- index 1 = fathers (males), 2 = mothers (females)
 						sex = type(tData.nGender) == "number" and tData.nGender or (nIdx == 1 and 0 or 1),
 						maturity = type(tData.nMaturity) == "number" and tData.nMaturity or nil,
-						forSale = tData.bForSale == true,
+						forSale = ParkReads.StoredForSale(tData, guid),
 						rating = type(tData.sRating) == "string" and tData.sRating or nil,
 						par = tStatic.tPar,
 						genes = tStatic.tGenes,
 						grades = tG and { F = tG.nFertility, I = tG.nImmunity, S = tG.nSize, L = tG.nLongevity } or nil,
 					}
 					tPresent[sGuid] = true
+					local e = call(animals, "AnimalGUIDToEntityID", guid)
+					local sName = tostring(tData.sName or sGuid)
+					-- g: the game's own flag, m: the lister saw it listed
+					if tList[#tList].forSale then
+						tListed[#tListed + 1] = sName .. ":" .. (tData.bForSale == true and "g" or "m")
+					end
+					if e ~= nil and e ~= 0 and e ~= false then
+						tLive[#tLive + 1] = sName .. ":" .. tostring(e)
+					else
+						tRecord[#tRecord + 1] = sName
+					end
 				end
 			end
 		end
 	end
-	local tAnc = self:_Ancestors(tList, tPresent, function(g)
-		local bP, tPar = pcall(animals.GetParents, animals, tonumber(g) or g)
-		if bP and type(tPar) == "table" then
-			return parentList(tPar)
-		end
-		return nil
-	end)
+	logEvent("kin", "stored_live", { species = sSpecies, live = global.table.concat(tLive, " "), record = global.table.concat(tRecord, " "), listed = global.table.concat(tListed, " ") })
+	local tAnc = self:_Ancestors(tList, tPresent, ancestorParents(animals), self.tAncestors)
 	mark(#tList > 0 and "kin_stored_ok" or "kin_stored_none")
 	answer({ species = sSpecies, animals = tList, anc = tAnc, capped = nSeen > #tList and #tList >= self.nStoredMax })
 end
@@ -2265,10 +2529,17 @@ Kin._PlayerStore = function(self)
 	return (Core and Core.PlayerStore) or global.package.loaded["pz2qol.playerstore"]
 end
 
--- tells the open views to read the store again
-Kin._StoreReset = function(self)
+-- tells the open views to read the store again, and why: "park" (a park
+-- started or ended: its entity ids are gone) or "data" (the store's answer
+-- changed in the same park)
+Kin._StoreReset = function(self, sWhy)
 	for oUI in pairs(self.tViews) do
-		pcall(oUI.TriggerEventAtNextAdvance, oUI, "PZ2QoL_StoreReset")
+		-- at a park's end the views are already shut down: the game asserts
+		-- on an event sent to one that isn't ready
+		local bOk, bReady = pcall(oUI.IsReady, oUI)
+		if bOk and bReady then
+			pcall(oUI.TriggerEventAtNextAdvance, oUI, "PZ2QoL_StoreReset", sWhy)
+		end
 	end
 end
 
@@ -2318,6 +2589,18 @@ Kin._ZooKey = function(self, tAPIs, nWaited)
 	return "o_" .. sHub .. "_" .. keyPart(sName, 24) .. "_" .. hash(sName)
 end
 
+-- the active world's zoo: the park's own, or the one the hub's Send to Zoo goes to; nil while the game names none
+Kin.WorldZooKey = function(self)
+	local sKey = nil
+	pcall(function() sKey = self:_ZooKey(api.world.GetWorldAPIs(), 1e9) end)
+	return sKey
+end
+
+-- two zoo keys prove different zoos only when both are known
+Kin.ZoosDiffer = function(self, sZooA, sZooB)
+	return sZooA ~= nil and sZooB ~= nil and sZooA ~= sZooB
+end
+
 -- From the park tick (throttled) and from requests: finds the zoo's key
 -- and checks the player store. Tells the views when the answer changes.
 Kin._ResolveStore = function(self)
@@ -2343,7 +2626,7 @@ Kin._ResolveStore = function(self)
 		self.sStoreOff = sWhy or "wait"
 		if self.sStoreOff == "noplayer" and sWas ~= "noplayer" then
 			mark("assign_store_unavailable")
-			self:_StoreReset()
+			self:_StoreReset("data")
 		end
 		return
 	end
@@ -2362,7 +2645,7 @@ Kin._ResolveStore = function(self)
 	end
 	local sText = Store:Read(sKey)
 	mark((type(sText) == "string" and sText ~= "") and "assign_store_loaded" or "assign_store_empty")
-	self:_StoreReset()
+	self:_StoreReset("data")
 end
 
 -- from the park tick
@@ -2393,7 +2676,7 @@ Kin._LoadWorld = function(self, tLoad)
 			if Store:Read(self.sZooKey) == "" then
 				local bOk = Store:Write(self.sZooKey, s, now())
 				mark(bOk and "assign_store_migrated" or "assign_store_migrate_failed")
-				self:_StoreReset()
+				self:_StoreReset("data")
 			end
 		else
 			self.sLegacyData = s
@@ -2409,7 +2692,7 @@ Kin._ParkStoreStart = function(self, tAPIs)
 	self.tStoreAPIs = type(tAPIs) == "table" and tAPIs or {}
 	self.sStoreOff = "wait"
 	self:_RegisterReader(self.tStoreAPIs)
-	self:_StoreReset()
+	self:_StoreReset("park")
 end
 
 Kin._RegisterReader = function(self, tAPIs)
@@ -2459,12 +2742,8 @@ Kin._ParkStoreEnd = function(self)
 	self.nStoreFirstTick = nil
 	self.nStoreTried = nil
 	self.sStoreOff = "nopark"
-	local Store = self:_PlayerStore()
-	if Store ~= nil then
-		pcall(Store.Forget, Store)
-	end
 	if bHad then
-		self:_StoreReset()
+		self:_StoreReset("park")
 	end
 end
 
@@ -2557,6 +2836,99 @@ end
 -----------------------------------------------------------------------
 -- Auto mode's gate (asked only while a species is on Auto; reads only)
 -----------------------------------------------------------------------
+-- Values Lua keeps between the park and hub pages (each page keeps its own
+-- data; Lua outlives both). One page sets the JSON, the other asks for it:
+--   PZ2QoL_<name>Set(json), PZ2QoL_<name>Get(reqId) -> PZ2QoL_<name>Result(reqId, json)
+--   SellAdvice   park -> Storage window: the animals Auto mode advises selling
+--   MarketMates  park -> Market: each species' breeders (gene strands) and standard
+--   StoredAges   Storage window -> park: the stored animals' ages
+-- A value over nMax characters is refused (the last one kept stays) and
+-- logged once until one fits again.
+Kin.tRelays = {
+	SellAdvice = { sValue = "[]", nMax = 20000, sLog = "sell_advice" },
+	MarketMates = { sValue = "{}", nMax = 60000, sLog = "market_mates" },
+	StoredAges = { sValue = "[]", nMax = 60000, sLog = "stored_ages" },
+}
+
+Kin.SetRelay = function(self, sName, sJson)
+	local tRelay = self.tRelays[sName]
+	if tRelay == nil or type(sJson) ~= "string" then
+		return
+	end
+	if #sJson > tRelay.nMax then
+		if not tRelay.bTooBig then
+			tRelay.bTooBig = true
+			trace(tRelay.sLog .. " refused: " .. #sJson .. " characters, at most " .. tRelay.nMax .. " are kept")
+			logEvent("kin", tRelay.sLog .. "_too_big", { chars = #sJson, max = tRelay.nMax })
+		end
+		return
+	end
+	tRelay.bTooBig = false
+	tRelay.sValue = sJson
+end
+
+Kin.GetRelay = function(self, oUI, sName, sReq)
+	local tRelay = self.tRelays[sName]
+	if tRelay ~= nil then
+		pcall(oUI.TriggerEventAtNextAdvance, oUI, "PZ2QoL_" .. sName .. "Result", sReq, tRelay.sValue)
+	end
+end
+
+-----------------------------------------------------------------------
+-- Market listings' genes (hub page), for the calves its badges predict:
+-- the hub's own Compare Mates reads a listing's alleles this way (id type 7,
+-- a market GUID). Other id types answer false; each is logged once.
+--   PZ2QoL_MarketGenes(reqId, ids csv) -> PZ2QoL_MarketGenesResult(reqId, json { id: genes | false })
+-----------------------------------------------------------------------
+Kin.nMarketGenesMax = 60    -- ids per request
+Kin.nMarketsGUID = 7
+Kin.tMarketTypesLogged = {}
+
+Kin.MarketGenes = function(self, oUI, sReq, sCsv)
+	local hub = api.planetHub
+	local tOut = {}
+	if type(hub) == "table" and type(hub.GetIDAndAIDType) == "function" and type(hub.GetMarketListingAnimalGenes) == "function" then
+		local n = 0
+		for sId in string.gmatch(tostring(sCsv or ""), "[^,]+") do
+			n = n + 1
+			if n > self.nMarketGenesMax then
+				break
+			end
+			local tGenes = nil
+			local bOk, nID, nType = pcall(hub.GetIDAndAIDType, sId)
+			if bOk and nID ~= nil and nType == self.nMarketsGUID then
+				local bG, t = pcall(hub.GetMarketListingAnimalGenes, nID)
+				if bG then
+					tGenes = geneStrings(t)
+				end
+			elseif not self.tMarketTypesLogged[tostring(nType)] then
+				self.tMarketTypesLogged[tostring(nType)] = true
+				logEvent("market", "genes_unreadable", { idType = tostring(nType), ok = tostring(bOk) })
+			end
+			tOut[sId] = tGenes or false
+		end
+	end
+	pcall(oUI.TriggerEventAtNextAdvance, oUI, "PZ2QoL_MarketGenesResult", sReq, Kin.Encode(tOut))
+end
+
+-- PZ2QoL_KinGrown(reqId, "id,id,...") -> PZ2QoL_KinGrownResult(reqId, json):
+-- { [id] = true while the game still blocks it as a juvenile, false once
+-- that lifts }; ids the game did not answer for are left out.
+Kin.Grown = function(self, oUI, sReq, sIds)
+	local tOut = {}
+	local t = self:_ParkWorld()
+	if t ~= nil and t.animals ~= nil then
+		for sId in string.gmatch(tostring(sIds or ""), "[^,]+") do
+			local e = tonumber(sId)
+			if e ~= nil then
+				tOut[sId] = juvenileBlock(t.animals, e)
+			end
+		end
+	end
+	pcall(mark, "kin_grown")
+	pcall(oUI.TriggerEventAtNextAdvance, oUI, "PZ2QoL_KinGrownResult", sReq, Kin.Encode(tOut))
+end
+
 -- PZ2QoL_AutoGate(reqId) -> PZ2QoL_AutoGateResult(reqId, json):
 --   park     a park world is running
 --   move     api.planetHub.IsPlayerAnimalMovementEnabled() (omitted if unknown)
@@ -2580,21 +2952,14 @@ Kin.AutoGate = function(self, oUI, sReq)
 		end
 	end)
 	pcall(function()
-		local hub = api.planetHub
-		local fn = hub and hub.IsPlayerAnimalMovementEnabled
-		if type(fn) == "function" then
-			local bOk, b = pcall(fn)
-			if bOk and type(b) == "boolean" then
-				tOut.move = b
-			end
-		end
-	end)
-	pcall(function()
 		local tAPIs = self:_ParkWorld()
 		if tAPIs == nil then
 			return
 		end
 		tOut.park = true
+		-- a park's own state: asked on the start screen it crashed the game
+		-- natively (dump 2cc727a7, 2026-10-23 18:50, AutoGate on the globe)
+		tOut.move = playerMovementEnabled()
 		tOut.gameMode = self:_GameMode(tAPIs)
 		if tAPIs.franchise ~= nil then
 			local franchise = tAPIs.franchise
@@ -2602,27 +2967,9 @@ Kin.AutoGate = function(self, oUI, sReq)
 			if type(bBusy) == "boolean" then
 				tOut.dbBusy = bBusy
 			end
-			-- evidence for "offline" (Auto mode acts without a click only
-			-- then): the hub type and its Franchise constant are both known,
-			-- and the zoo has no Franchise zoo GUID (Kin._ZooKey's test)
-			local bKnown = false
-			pcall(function()
-				bKnown = franchise.PlanetHubType_FranchiseOnline ~= nil and franchise:GetPlanetHubType() ~= nil
-			end)
-			tOut.hubTypeKnown = bKnown
-			local bOk, g = pcall(function() return franchise:GetCurrentZooGUID() end)
-			if bOk then
-				tOut.franchiseZoo = g ~= nil and g ~= "" and g ~= 0
-			end
 		end
 		local park = tAPIs.park
-		local nMax, nNow = call(park, "GetTradeCentreMaxCapacity"), call(park, "GetNumberOfAnimalsInTradeCentre")
-		if type(nMax) == "number" then
-			tOut.tcMax = nMax
-		end
-		if type(nNow) == "number" then
-			tOut.tcCount = nNow
-		end
+		tOut.tcMax, tOut.tcCount = ParkReads.TradeCentreRoom(park)
 		-- the park calendar (Auto mode's schedule): the real date, not the
 		-- apparent one the player's time slider can override
 		local oDate = call(park, "GetTimeOfMonth")
@@ -2675,6 +3022,9 @@ Kin.Attach = function(self, oUI)
 		oUI:AddEventListener("PZ2QoL_KinContracept", 2, guard("contracept", function(sId, bOn)
 			self:Contracept(oUI, sId, bOn)
 		end), self)
+		oUI:AddEventListener("PZ2QoL_KinRename", 2, guard("rename", function(sId, sName)
+			self:Rename(oUI, sId, sName)
+		end), self)
 		oUI:AddEventListener("PZ2QoL_KinLocate", 1, guard("locate", function(sId)
 			self:Locate(oUI, sId)
 		end), self)
@@ -2714,6 +3064,20 @@ Kin.Attach = function(self, oUI)
 		oUI:AddEventListener("PZ2QoL_AutoGate", 1, guard("auto_gate", function(sReq)
 			self:AutoGate(oUI, sReq)
 		end), self)
+		oUI:AddEventListener("PZ2QoL_KinGrown", 2, guard("grown", function(sReq, sIds)
+			self:Grown(oUI, sReq, sIds)
+		end), self)
+		for sName in pairs(self.tRelays) do
+			oUI:AddEventListener("PZ2QoL_" .. sName .. "Set", 1, guard("relay_set", function(sJson)
+				self:SetRelay(sName, sJson)
+			end), self)
+			oUI:AddEventListener("PZ2QoL_" .. sName .. "Get", 1, guard("relay_get", function(sReq)
+				self:GetRelay(oUI, sName, sReq)
+			end), self)
+		end
+		oUI:AddEventListener("PZ2QoL_MarketGenes", 2, guard("market_genes", function(sReq, sCsv)
+			self:MarketGenes(oUI, sReq, sCsv)
+		end), self)
 	end)
 	if not bOk then
 		trace("listeners failed: " .. tostring(sErr))
@@ -2721,6 +3085,7 @@ Kin.Attach = function(self, oUI)
 	mark(bOk and "kin_attached" or "kin_attach_failed")
 end
 
+-- Managers.HeatMapManager Init / Advance / Shutdown, tested on 1.0.5
 Kin._PatchHeatMapManager = function(self, HeatMapManager)
 	local fnInit = HeatMapManager.Init
 	local fnAdvance = HeatMapManager.Advance
@@ -2761,15 +3126,21 @@ Kin._PatchHeatMapManager = function(self, HeatMapManager)
 		HeatMapManager.Shutdown = function(oManager, ...)
 			mark("x_park_end")
 			if self.oHeatMapManager == oManager then
-				self.oHeatMapManager = nil
-				self.nLastTick = nil
-				self.tJob = nil
-				-- entity ids are per park
-				self.tStatic = {}
-				self.tExhibitUids = {}
-				self.tAncestors = {}
-				self.tStored = {}
-				pcall(self._ParkStoreEnd, self)
+				local bOk, sErr = pcall(function()
+					self.oHeatMapManager = nil
+					self.nLastTick = nil
+					self.tJob = nil
+					self.bEngineCallsLogged = nil
+					-- entity ids are per park
+					self.tStatic = {}
+					self.tExhibitUid = {}
+					self.tAncestors = {}
+					self.tStored = {}
+					self:_ParkStoreEnd()
+				end)
+				if not bOk then
+					trace("park end failed: " .. tostring(sErr))
+				end
 			end
 			local tResults = table.pack(fnShutdown(oManager, ...))
 			mark("x_park_end_done")
@@ -2778,6 +3149,7 @@ Kin._PatchHeatMapManager = function(self, HeatMapManager)
 	end
 end
 
+-- StartScreen.Globe.AnimalStorageHubMode TransitionIn / TransitionOut, tested on 1.0.5
 Kin._PatchStorageMode = function(self, StorageMode)
 	local fnIn = StorageMode.TransitionIn
 	local fnOut = StorageMode.TransitionOut
@@ -2786,13 +3158,19 @@ Kin._PatchStorageMode = function(self, StorageMode)
 		return
 	end
 	StorageMode.TransitionIn = function(oMode, ...)
-		self.oStorageMode = oMode
+		pcall(function()
+			self.oStorageMode = oMode
+			-- each visit has its own background world
+			self.tStorageAncestors = {}
+		end)
 		return fnIn(oMode, ...)
 	end
 	StorageMode.TransitionOut = function(oMode, ...)
-		if self.oStorageMode == oMode then
-			self.oStorageMode = nil
-		end
+		pcall(function()
+			if self.oStorageMode == oMode then
+				self.oStorageMode = nil
+			end
+		end)
 		return fnOut(oMode, ...)
 	end
 end

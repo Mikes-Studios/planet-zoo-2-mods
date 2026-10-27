@@ -8,3 +8,6 @@ dist/
 art/logo/assets/*.hdr
 art/logo/*.blend
 art/logo/*.blend1
+
+# the page tests' dependencies (tests/page: npm install)
+node_modules/

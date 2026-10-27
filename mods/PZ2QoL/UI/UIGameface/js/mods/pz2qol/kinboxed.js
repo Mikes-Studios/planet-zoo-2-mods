@@ -33,15 +33,15 @@ async function findHabitat(a) {
         const facts = await askFacts(a.id);
         const pick = pickHabitat(facts);
         if (!pick.hab) {
-            kinToast({ severity: 'future', level: 'heads', kind: 'boxed', title: `No habitat for ${a.name || 'this animal'}`, text: `Find a habitat: ${pick.reason}.`, species: a.species });
+            kinToast({ severity: 'future', level: 'action', kind: 'boxed', title: `No habitat for ${a.name || 'this animal'}`, text: `Find a habitat: ${pick.reason}.`, species: a.species });
             return;
         }
         const res = await askMove(a.id, pick.hab.id);
         if (res && res.ok) {
-            kinToast({ severity: 'covered', level: 'heads', kind: 'boxed', title: `${a.name || 'Animal'} is on its way`, text: `To ${pick.hab.name} (${pick.hab.why}).`, species: a.species });
+            kinToast({ severity: 'covered', level: 'heads', kind: 'boxed', answer: true, title: `${a.name || 'Animal'} is on its way`, text: `To ${pick.hab.name} (${pick.hab.why}).`, species: a.species });
         }
         else {
-            kinToast({ severity: 'risk', level: 'heads', kind: 'boxed', title: `${a.name || 'Animal'} was not moved`, text: `The game said no: ${(res && res.detail) || 'no answer'}.`, species: a.species });
+            kinToast({ severity: 'risk', level: 'action', kind: 'boxed', title: `${a.name || 'Animal'} was not moved`, text: `The game said no: ${(res && res.detail) || 'no answer'}.`, species: a.species });
         }
         requestKinScan('boxed_move', { force: true, delay: 1500 });
     }

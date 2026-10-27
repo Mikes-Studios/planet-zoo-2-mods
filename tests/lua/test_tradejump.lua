@@ -56,6 +56,8 @@ local franchise = {
 }
 local tWorld = {
 	franchise = franchise,
+	-- g5 is listed on the market: the counts leave it out
+	animals = { GetMarketAnimalCompareMatesData = function(_, guid) return { bForSale = guid == "g5" } end },
 	facilities = { ParkHasBuildingForAnimalStorage = function() return bHasBuilding end },
 }
 local oBWDM = {
@@ -238,7 +240,7 @@ check(c and c.tArgs[1] == "c1", "counts answered")
 local s = c.tArgs[2]
 check(string.find(s, '"ok":true', 1, true) ~= nil, "counts ok")
 check(string.find(s, '"mode":"franchise"', 1, true) ~= nil, "counts mode")
-check(string.find(s, '"Lion":{', 1, true) ~= nil and (string.find(s, '"m":2', 1, true) ~= nil) and (string.find(s, '"f":3', 1, true) ~= nil), "Lion 2 m 3 f: " .. s)
+check(string.find(s, '"Lion":{', 1, true) ~= nil and (string.find(s, '"m":2', 1, true) ~= nil) and (string.find(s, '"f":2', 1, true) ~= nil), "Lion 2 m 2 f (the listed one left out): " .. s)
 check(string.find(s, '"Leopard_African":{', 1, true) ~= nil, "Leopard counted")
 check(string.find(s, '"Broken"', 1, true) == nil, "a failing species is left out")
 check(#calls("Counts") == 3, "each species asked once (bad name skipped)")

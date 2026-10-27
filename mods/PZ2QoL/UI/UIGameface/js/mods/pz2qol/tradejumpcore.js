@@ -76,3 +76,54 @@ export function pendingStep(p, o = {}) {
     if (o.visibleSince && now - o.visibleSince >= EMPTY_STORAGE_WAIT_MS) return 'apply';
     return 'wait';
 }
+
+// a mate's genes travel as 48 letters: these four strands, 12 single-letter alleles each
+const GENE_KEYS = ['F', 'I', 'S', 'L'];
+// a harem: the male is judged by his average over every female he fathers with
+const MAX_MATES = 24;
+
+function packGenes(genes) {
+    const parts = GENE_KEYS.map(k => genes && genes[k]);
+    return parts.every(s => typeof s === 'string' && /^[A-Za-z]{12}$/.test(s)) ? parts.join('') : null;
+}
+
+function unpackGenes(text) {
+    if (!/^[A-Za-z]{48}$/.test(text || '')) return null;
+    const out = {};
+    GENE_KEYS.forEach((k, i) => { out[k] = text.slice(i * 12, i * 12 + 12); });
+    return out;
+}
+
+// A notice's Market extras as one text Lua hands over (it lets only letters,
+// digits, '=' and ';' through): "sex=f;dim=48;mate=<48 letters>;calf=61;strict=1".
+// strict: CC listings with fertility above 0% only, and the ones whose
+// calves fall under the floor hidden, not faded
+export function formatTradeExtra({ sex = '', dimBelow = null, mates = [], floor = null, strict = false } = {}) {
+    const parts = [];
+    if (sex === 'm' || sex === 'f') parts.push(`sex=${sex}`);
+    if (Number.isFinite(dimBelow) && dimBelow > 0) parts.push(`dim=${Math.round(dimBelow)}`);
+    for (const m of (mates || []).map(packGenes).filter(Boolean).slice(0, MAX_MATES)) parts.push(`mate=${m}`);
+    if (Number.isFinite(floor)) parts.push(`calf=${Math.round(floor)}`);
+    if (strict) parts.push('strict=1');
+    return parts.join(';');
+}
+
+export function parseTradeExtra(text) {
+    const out = { sex: '', dimBelow: null, mates: [], floor: null, strict: false };
+    for (const part of String(text || '').split(';')) {
+        const [k, v] = part.split('=');
+        if (k === 'sex' && (v === 'm' || v === 'f')) out.sex = v;
+        if (k === 'dim' && /^\d+$/.test(v || '')) out.dimBelow = Number(v);
+        if (k === 'mate' && unpackGenes(v)) out.mates.push(unpackGenes(v));
+        if (k === 'calf' && /^\d+$/.test(v || '')) out.floor = Number(v);
+        if (k === 'strict' && v === '1') out.strict = true;
+    }
+    return out;
+}
+
+// The game's own Market filters a strict hand-over sets (as the CC and
+// Breeders presets send them): CC listings only, and no 0% fertility, which
+// never breeds. Fertility and immunity minimums above that would hide good
+// fathers: a calf's fertility and immunity come from how unlike its
+// parents' strands are, not from either parent's own percent.
+export const STRICT_MARKET_EVENTS = [['FilterCash', false], ['FilterCredits', true], ['FilterFertilityMin', 5]];

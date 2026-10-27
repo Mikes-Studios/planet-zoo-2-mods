@@ -3,6 +3,7 @@
 import * as DS from '/js/common/core/DataStore.js';
 import { sendEvent } from '/js/common/core/Engine.js';
 import { DataStoreCollection } from '/js/common/data/DataStoreCollection.js';
+import { dlog } from '/js/mods/pz2qol/debuglog.js';
 
 export const MARKET_LIST = ['hubAnimalsData', 'animalMarketData', 'list'];
 export const STORAGE_LIST = ['hubAnimalsData', 'animalStorageData', 'list'];
@@ -32,36 +33,74 @@ export function get(context, prop) {
     }
 }
 
+export function isExpired(ctx) {
+    const timer = get(ctx, 'auctionTimerSeconds');
+    return timer != undefined && timer <= 0;
+}
+
+// A market row still for sale: not expired and not adopted (already bought),
+// the two the game labels instead of a price (MarketAnimalListItem).
+export function isLiveAsk(ctx) {
+    return get(ctx, 'isAdopted') !== true && !isExpired(ctx);
+}
+
 function gene(context, id) {
     const v = get(context.concat(['genetics', id]), 'value');
     return typeof v === 'number' ? v : undefined;
 }
 
+const ROW_PROPS = ['id', 'species', 'gender', 'maturity', 'age', 'isShoal', 'isExhibit', 'isPregnant', 'isAlpha', 'storageTag',
+    'auctionPrice', 'auctionIsConservationCredits', 'auctionTimerSeconds', 'isMoving', 'name', 'ratings', 'colormorphLabel', 'source'];
+let refusalLogged = false;
+
+// Every row property in one native call; one by one where the game refuses
+// the batch (a row whose context is gone throws there, not in getValue)
+function rowValues(context) {
+    try {
+        return DS.getValues(context, ROW_PROPS) || {};
+    }
+    catch (e) {
+        if (!refusalLogged) dlog('ui', 'row_batch_refused', { error: String(e) });
+        refusalLogged = true;
+    }
+    const out = {};
+    for (const prop of ROW_PROPS) out[prop] = get(context, prop);
+    return out;
+}
+
 // Builds the plain animal object used by scores.js from a row context.
+// "[AnimalExchange_Animal_Age:Years=(4.8)]" -> 4.8
+function yearsOf(raw) {
+    const m = typeof raw === 'string' ? raw.match(/Years=\(([\d.]+)\)/) : null;
+    return m ? Number(m[1]) : undefined;
+}
+
 export function readAnimal(context) {
+    const v = rowValues(context);
     return {
-        id: get(context, 'id'),
-        species: get(context, 'species'),
-        gender: get(context, 'gender'),
-        maturity: get(context, 'maturity'),
-        isShoal: !!get(context, 'isShoal'),
-        isExhibit: !!get(context, 'isExhibit'),
-        isPregnant: !!get(context, 'isPregnant'),
-        isAlpha: !!get(context, 'isAlpha'),
-        storageTag: get(context, 'storageTag'),
-        price: get(context, 'auctionPrice'),
-        isCC: !!get(context, 'auctionIsConservationCredits'),
-        auctionTimerSeconds: get(context, 'auctionTimerSeconds'),
-        isMoving: !!get(context, 'isMoving'),
-        name: get(context, 'name'),
+        id: v.id,
+        species: v.species,
+        gender: v.gender,
+        maturity: v.maturity,
+        age: yearsOf(v.age),
+        isShoal: !!v.isShoal,
+        isExhibit: !!v.isExhibit,
+        isPregnant: !!v.isPregnant,
+        isAlpha: !!v.isAlpha,
+        storageTag: v.storageTag,
+        price: v.auctionPrice,
+        isCC: !!v.auctionIsConservationCredits,
+        auctionTimerSeconds: v.auctionTimerSeconds,
+        isMoving: !!v.isMoving,
+        name: v.name,
         // genetics medal of the Rating column: 'none'|'bronze'|'silver'|'gold'
-        medal: get(context, 'ratings'),
+        medal: v.ratings,
         // what the info panel shows under "Colour morph" (a label or loc
         // token, maybe a "normal" word); see morphOf() in pricing.js
-        colormorph: get(context, 'colormorphLabel'),
+        colormorph: v.colormorphLabel,
         // where it came from ("[AnimalExchange_Source_Description:Value=|Frontier Zoo|]"):
         // a Frontier zoo means the market won't take it (marketdesk Quick trade)
-        source: get(context, 'source'),
+        source: v.source,
         key: childKey(context),
         genes: {
             size: gene(context, 'size'),
@@ -128,6 +167,12 @@ export function readZooAnimal(context) {
         isExhibit: genes.size === undefined && genes.longevity !== undefined,
         genes,
     };
+}
+
+// The Animals screen's own navigation event (ManagementData: gameEventID
+// zoo_animals, sub tab animals): the game opens its Animals tab again.
+export function reopenZooAnimals() {
+    sendEvent('ManagementScreenChanged', 'zoo_animals', 'animals');
 }
 
 export function sendScreenEvent(screenEventId, suffix, value) {

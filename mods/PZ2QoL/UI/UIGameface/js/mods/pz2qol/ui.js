@@ -47,12 +47,60 @@ export function icon(name, tint = 'brown', extra = '') {
     return h(`div.PZ2QoL_icon.tint_${tint}${extra ? '.' + extra : ''}`, { style: { backgroundImage: `url(/img/icons/${name}.svg)` } });
 }
 
+// A close cross for a round button: the game's icon, never two CSS-rotated
+// bars (Gameface can draw the elements after them with their rotation).
+export function crossMark() {
+    return icon('Icon_Close', 'brown', 'cross');
+}
+
 export function setText(node, text) {
     if (node.textContent != text) node.textContent = text;
 }
 
 export function setClass(node, cls, on) {
     if (node.classList.contains(cls) != !!on) node.classList.toggle(cls, !!on);
+}
+
+// Its box on screen, or null when it is hidden, removed from the page or 0 x 0.
+export function visibleBox(node) {
+    if (!node) return null;
+    for (let n = node; n && n != document.body; n = n.parentNode) {
+        if (n.classList && (n.classList.contains('hidden') || n.classList.contains('displayNone') || n.classList.contains('tooltipHidden'))) return null;
+    }
+    const r = node.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 ? r : null;
+}
+
+// A game popup (Compare Mates, Genealogy...) is over the screen: our fixed widgets would float on top of it.
+export function isGamePopupOpen() {
+    return !!document.querySelector('.PopupActionsModule_root.show');
+}
+
+// one rem in pixels (the game scales its UI through the root font size)
+export function remPx() {
+    try {
+        return parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+    }
+    catch (e) {
+        return 16;
+    }
+}
+
+// For a page's poller: tick() -> when sel's node came on screen (0 while it
+// is not); onShown(at) runs once each time it comes up.
+export function visibilityWatch(sel, onShown) {
+    let since = 0;
+    return () => {
+        if (!visibleBox(document.querySelector(sel))) {
+            since = 0;
+            return since;
+        }
+        if (!since) {
+            since = Date.now();
+            onShown(since);
+        }
+        return since;
+    };
 }
 
 export const GENES = [

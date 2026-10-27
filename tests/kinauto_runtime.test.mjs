@@ -11,6 +11,7 @@ import { register } from 'node:module';
 
 register('./gameface-loader.mjs', import.meta.url);
 
+const { AUTO_LIMITS } = await import('../mods/PZ2QoL/UI/UIGameface/js/mods/pz2qol/kinautocore.js');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const M = 0, F = 1;
 const G = (a, b) => ({ F: a.repeat(6) + b.repeat(6), I: a.repeat(6) + b.repeat(6), S: 'AAAAAACCCCCC', L: 'AAAAAACCCCCC' });
@@ -52,7 +53,8 @@ globalThis.engine = {
             fake.file = args[1];
             fire('PZ2QoL_StoreSaved', args[0], true);
         }
-        else if (name === 'PZ2QoL_KinScan') setTimeout(publish, 5);
+        // answered as the game does, in a chunk: that also ends the scan, so the next one can go
+        else if (name === 'PZ2QoL_KinScan') fire('PZ2QoL_KinChunk', 'scan' + fake.calls.length, 1, 1, JSON.stringify(snapshot()));
         else if (name === 'PZ2QoL_KinDestinations') fire('PZ2QoL_KinDestinationsResult', args[0], JSON.stringify({ bySpecies: { Lion: { 1: { ok: true }, 2: { ok: true }, 3: { ok: true } }, Zebra: { 1: { ok: true }, 2: { ok: true }, 3: { ok: true } } }, habitats: [{ id: '1', name: 'H1' }, { id: '2', name: 'H2' }, { id: '3', name: 'H3' }], tradeCentre: { id: '99', name: 'Trade Centre' } }));
         else if (name === 'PZ2QoL_KinSpecies') fire('PZ2QoL_KinSpeciesResult', args[0], JSON.stringify({ social: { min: 2, max: 6 }, mating: 'polygyny', habitats: { 1: { available: { land: 4000 }, required: { land: 1000 }, adults: 2 }, 2: { available: { land: 4000 }, required: { land: 1000 }, adults: 2 }, 3: { available: { land: 4000 }, required: { land: 1000 }, adults: 0 } } }));
         else if (name === 'PZ2QoL_AutoGate') fire('PZ2QoL_AutoGateResult', args[0], JSON.stringify(Object.assign({ gameMode: fake.mode, hubTypeKnown: true, franchiseZoo: fake.mode === 'franchise', monthSec: fake.monthSec }, fake.date, fake.gate)));
@@ -81,6 +83,8 @@ async function boot(file) {
     fake.file = file;
     kin = await import('../mods/PZ2QoL/UI/UIGameface/js/mods/pz2qol/kin.js');
     fake.kin = kin;
+    // as main.js: Kin listens for the game's scans before Auto mode starts
+    kin.installKin();
     auto = await import('../mods/PZ2QoL/UI/UIGameface/js/mods/pz2qol/kinauto.js');
     const store = await import('../mods/PZ2QoL/UI/UIGameface/js/mods/pz2qol/userstore.js');
     const pace = await import('../mods/PZ2QoL/UI/UIGameface/js/mods/pz2qol/pace.js').catch(() => null);
@@ -90,6 +94,12 @@ async function boot(file) {
     auto.setAutopilotToastHook((kind, d) => toasts.push({ kind, d }));
     auto.installAutopilot();
     await sleep(30);
+}
+
+// the test's calendar passes a season in seconds: each species' last run is
+// put a real minute back, past the floor between scheduled runs
+function pastRealFloor() {
+    for (const s of Object.values(auto._autopilotInternals().ledger.sp)) if (s.last) s.last.real -= AUTO_LIMITS.scheduledGapMs;
 }
 
 // skip the first minute of watching (the zoo just loaded)
@@ -156,7 +166,8 @@ test('the schedule is game time: nothing while the calendar stands still, a run 
     await sleep(7000);
     assert.equal(moves(), 0, 'nothing before it is due');
     assert.equal(auto.getSpeciesAuto('Lion').last.real, before, 'no run');
-    assert.equal(auto.getSpeciesAuto('Lion').rate, 0, 'the game is seen paused');
+    // the speed is measured over 10 s of the calendar standing still
+    assert.ok(await until(() => auto.getSpeciesAuto('Lion').rate === 0), 'the game is seen paused');
     assert.equal(auto.getSpeciesAuto('Lion').status, 'waiting');
     // two months pass: still waiting, one month left
     fake.date = { year: 5, month: 3, monthProp: 0 };
@@ -165,6 +176,7 @@ test('the schedule is game time: nothing while the calendar stands still, a run 
     assert.ok(Math.abs(auto.getSpeciesAuto('Lion').left - 1) < 0.01, String(auto.getSpeciesAuto('Lion').left));
     // a season after the run: due
     fake.date = { year: 5, month: 4, monthProp: 0.1 };
+    pastRealFloor();
     assert.ok(await until(() => auto.getSpeciesAuto('Lion').last.real > before && auto.getSpeciesAuto('Lion').status === 'waiting'), JSON.stringify(auto.getSpeciesAuto('Lion').last));
     assert.ok(auto.getSpeciesAuto('Lion').left > 2.9, 'the next one a season later');
     assert.equal(moves(), 0, 'the groups are already the best: nothing moved');
@@ -217,6 +229,7 @@ test('Franchise: a due run goes ahead by itself, with no click and no notice to 
     settle();
     const A = auto._autopilotInternals();
     A.ledger.sp.Lion.next = 0;
+    pastRealFloor();
     assert.ok(await until(() => moves() > 0), 'it ran by itself');
     assert.ok(await until(() => auto.getSpeciesAuto('Lion').status === 'waiting'));
     assert.equal(kin.getKinModel().pairs.filter(p => p.severity === 'risk').length, 0);
@@ -239,6 +252,7 @@ test('the queue: species due together take turns, one run at a time, none skippe
     settle();
     A.ledger.sp.Lion.next = 0;
     A.ledger.sp.Zebra.next = 0;
+    pastRealFloor();
     let both = 0, seenQueued = false;
     const end = Date.now() + 30000;
     while (Date.now() < end) {
@@ -255,6 +269,7 @@ test('the queue: species due together take turns, one run at a time, none skippe
     assert.deepEqual(A.queue, [], 'the queue is empty');
     // Run now while another species runs: first in line, then it runs
     A.ledger.sp.Zebra.next = 0;
+    pastRealFloor();
     assert.ok(await until(() => A.planning === 'Zebra' || (A.acting && A.acting.species === 'Zebra') || auto.getSpeciesAuto('Zebra').last.real > Date.now() - 1000));
     const zebraLast = auto.getSpeciesAuto('Zebra').last.real;
     const r = auto.runSpeciesNow('Lion');
@@ -297,6 +312,7 @@ async function longRun() {
     fake.calls = [];
     assert.equal(auto.setSpeciesAuto('Lion', { on: true, thin: true, fill: 'strict', every: 3 }), true);
     auto._autopilotInternals().ledger.sp.Lion.next = 0;
+    pastRealFloor();
     auto._autopilotInternals().pausedUntil.clear();
     publish();
     await sleep(50);

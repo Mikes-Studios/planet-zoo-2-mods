@@ -24,6 +24,8 @@ let iconEl = null;
 let expanded = false;
 let hideTimer = -1;
 let unseen = 0;
+// the Kin setting errorBanner (main.js): off, every report is logged, none shown
+let bannerOn = true;
 
 // Severity per source: drives the stripe colour and icon.
 const SEVERITY = {
@@ -165,7 +167,7 @@ export function breadcrumb(name) {
 
 export function reportError(source, title, detail, opts = {}) {
     breadcrumb('report');
-    const entry = { source: String(source), title: String(title), detail: errorText(detail), time: new Date(), shown: !opts.silent };
+    const entry = { source: String(source), title: String(title), detail: errorText(detail), time: new Date(), shown: !opts.silent && bannerOn };
     // the detailed log (debug builds): every report, shown or silent
     dlog('ui', 'report', { source: entry.source, title: entry.title, detail: entry.detail, shown: entry.shown });
     const last = log[log.length - 1];
@@ -187,7 +189,7 @@ export function reportError(source, title, detail, opts = {}) {
     try {
         console.error(`[PZ2QoL] ${entry.source}: ${entry.title} ${entry.detail}`);
         render();
-        if (opts.silent) {
+        if (!entry.shown) {
             return;
         }
         if (root.classList.contains('hidden')) unseen = 0;
@@ -202,6 +204,11 @@ export function reportError(source, title, detail, opts = {}) {
     catch (e) {
         // never let the banner itself break the page
     }
+}
+
+export function setErrorBanner(on) {
+    bannerOn = on !== false;
+    if (!bannerOn && root) root.classList.add('hidden');
 }
 
 // Called for every reported entry (used by the lister to stop on errors).

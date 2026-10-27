@@ -14,12 +14,18 @@ There is no `io` library and no visible log, so the mod logs by **loading tiny D
     exported `int mark(void *L)`, and each call appends a line. It never touches the Lua API.
 - From JS, `breadcrumb(name)` (errors.js) sends `engine.trigger('PZ2QoL_Trace', name)`, and Lua
   marks `js_<name>`. A heartbeat goes every 10 s, plus filter, select-all and lister steps.
-- **A name missing from `checkpoints.txt` is silently not logged.** Add new names there.
+- **A name missing from `checkpoints.txt` is silently not logged.** Add new names there. `tests/checkpoints.test.mjs` fails on a literal page breadcrumb (`js_<name>`) or a `main.js` install step (`js_step_<letters of its name>`) the list lacks; names built at run time are not checked.
 - `trace_listener_ok` / `trace_listener_failed` show whether the JS→Lua trace listener registered.
 - Server errors are marked as `srv_<Name>`, or as `srv_code_<N>` when the enum name can't be
   resolved.
 - The crash reporter creates a 0-byte `.dmp` at game launch and fills it in on a crash, so ignore
   0-byte dumps.
+
+## The error banner
+
+- `errors.js` shows every `reportError` not marked silent, and Lua's `PZ2QoL_Error` (`Errors:Flush`), in a banner with Details and Dismiss.
+- The Kin setting `errorBanner` (default on, under Alerts) switches the banner off: `main.js` passes it to `setErrorBanner`. Every report is still kept (`getErrorLog`, its entry `shown: false`), written to the detailed log and the console, and heard by `onErrorReported` (the lister stops a run on server errors either way).
+- With no mod page up, Lua's fallback dialog for server errors is outside the setting.
 
 ## Detailed log (debug builds, 2026-10-18)
 

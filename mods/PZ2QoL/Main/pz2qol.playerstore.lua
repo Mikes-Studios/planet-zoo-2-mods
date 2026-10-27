@@ -125,7 +125,7 @@ end
 
 local function entrySize(sKey, t)
 	local n = #sKey + 16
-	for k, v in pairs(t) do
+	for _, v in pairs(t) do
 		if type(v) == "string" then
 			n = n + #v
 		end
@@ -357,8 +357,8 @@ PlayerStore._RequestSave = function(self)
 	return bOk
 end
 
--- from the park tick: asks the game to save the player a few seconds after
--- the last change (never on every click)
+-- from every world's tick (the park's and the hub's): asks the game to
+-- save the player a few seconds after the last change (never on every click)
 PlayerStore.Tick = function(self, nNow)
 	if self.nDirtyLast == nil then
 		return
@@ -368,15 +368,28 @@ PlayerStore.Tick = function(self, nNow)
 	end
 end
 
--- a park ends: the game saves the player itself when a park closes, and the
--- data is already in its table
-PlayerStore.Forget = function(self)
-	self.nDirtySince = nil
-	self.nDirtyLast = nil
+-- Hub-only changes (Market desk, lister pace) have no park tick to save them;
+-- every world advances through World.AdvanceWhileRunning (tested on 1.0.5 build 1023906).
+PlayerStore._PatchWorld = function(self, World)
+	local fnAdvance = World.AdvanceWhileRunning
+	if type(fnAdvance) ~= "function" then
+		self:_Mark("assign_store_no_world_tick")
+		return
+	end
+	World.AdvanceWhileRunning = function(...)
+		local bOk = pcall(function()
+			self:Tick(api.time.PerformanceTimeToMilliseconds(api.time.GetPerformanceTimer()) / 1000)
+		end)
+		if not bOk then
+			self:_Mark("assign_store_world_tick_failed")
+		end
+		return fnAdvance(...)
+	end
 end
 
 PlayerStore.Init = function(self, Core)
 	self.Core = Core
 	-- found by Kin and Hub through Core (package.loaded keys proved unreliable)
 	Core.PlayerStore = self
+	Core:AddModulePatch("World.World", function(t) self:_PatchWorld(t) end)
 end

@@ -19,6 +19,7 @@ local tostring = global.tostring
 local type     = global.type
 local ipairs   = global.ipairs
 local string   = global.string
+local pairs    = global.pairs
 local table    = global.table
 
 local Errors = module(...)
@@ -70,10 +71,25 @@ local function enumName(tApi, tNames, nValue)
 	for _, sName in ipairs(tNames) do
 		local bOk, v = pcall(function() return tApi[sName] end)
 		if bOk and v ~= nil and v == nValue then
-			return string.gsub(sName, "^[^_]*_", "")
+			return (string.gsub(sName, "^[^_]*_", ""))
 		end
 	end
-	return nil
+	-- not one of the names above: any of the API's own constants with that
+	-- prefix (the franchise API lists more request types than are named here)
+	local sPrefix = tNames[1] and string.match(tNames[1], "^[^_]*_")
+	if sPrefix == nil then
+		return nil
+	end
+	local sFound = nil
+	pcall(function()
+		for k, v in pairs(tApi) do
+			if type(k) == "string" and v == nValue and string.sub(k, 1, #sPrefix) == sPrefix then
+				sFound = string.sub(k, #sPrefix + 1)
+				return
+			end
+		end
+	end)
+	return sFound
 end
 
 local function franchiseApi()
@@ -176,6 +192,11 @@ Errors.OnDatabaseErrorMessages = function(self, tMessages)
 			local sError = sName or ("code " .. tostring(tMsg.nError))
 			local sRequest = enumName(tFranchise, tRequestTypeNames, tMsg.nRequestType) or ("request #" .. tostring(tMsg.nRequestType))
 			local sHint = tDatabaseErrorHints["DatabaseError_" .. sError] or ""
+			if tFranchise == nil then
+				-- no API to read the names from: the bare number says nothing
+				sError = "unknown"
+				sHint = "The game's online API was not available, so the mod cannot tell which error the server sent. If something did not happen, try it again."
+			end
 			if sError ~= "Ok" then
 				-- the detailed log (debug builds): code, name and request
 				if self.Core then

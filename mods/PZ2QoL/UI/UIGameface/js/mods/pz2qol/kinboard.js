@@ -18,10 +18,10 @@
 // drag and drop).
 import { Sex, relationWord, severityRank, fertilityTag, holdReason, withStored } from '/js/mods/pz2qol/kincore.js';
 import {
-    STORED_SHOW, TRADE, boardColumns, canMove, moveText, planImpact, planProblems, prunePlan, setMove, simulatePlan, speciesList, suggestPlan,
-    isPinned, PREGNANT_STAYS,
+    STORED_SHOW, TRADE, boardColumns, canMove, homeOf, moveText, noOtherHabitat, placeName, planImpact, planProblems, prunePlan, setMove, simulatePlan, speciesList, suggestPlan,
+    isPinned, mustHouse, PREGNANT_STAYS,
 } from '/js/mods/pz2qol/kinboardcore.js';
-import { countWord, visibleCounts } from '/js/mods/pz2qol/kinplannercore.js';
+import { countWord, visibleCounts, worstOf } from '/js/mods/pz2qol/kinplannercore.js';
 import {
     getKinModel, getKinSettings, getKinState, locatePlace, markKinActive, onKin, onKinSettings, requestKinScan, setKinSettings,
     setContraception,
@@ -30,28 +30,29 @@ import {
     cachedDestinations, getPlanRun, isAskingStored, moveAnimal, onPlanRun, planBlockedReason, requestDestinations, requestSpeciesInfo, requestStoredAdults, runPlan, stopPlan,
 } from '/js/mods/pz2qol/kinmoves.js';
 import {
-    PROGRAMME_DEFAULTS, PROGRAMME_DEFAULT_STEP, PROGRAMME_STEPS, RATIO_CHOICES, conceptionChance, groupRule, planProgrammeAsync, programmeLogData, programmeProblemSig, ratioKey, unknownMakeupText, withFreshYoung, youngQuality,
+    PROGRAMME_DEFAULTS, PROGRAMME_STEPS, conceptionChance, groupRule, planProgrammeAsync, programmeLogData, isHousingMove, programmeProblemSig, ratioKey, unknownMakeupText, withFreshYoung, youngQuality,
 } from '/js/mods/pz2qol/kinprogramme.js';
 import {
-    CPU_ORDER, CPU_STEPS, CUSTOM_STEPS, DEEP_PRESETS, PRESET_ORDER, PRESET_WORDS, cpuOf, deepJob, deepKey, deepResult, deepSettings,
+    RATIO_SOURCE_WORDS, makeupFixed, makeupShort, makeupWords, programmeHabitats, programmeKey, programmeOptions, ratioChoice, saveProgStep, savedProgStep, stepRatioChoice,
+} from '/js/mods/pz2qol/progprefs.js';
+import { programmeSignature, staleDeepText } from '/js/mods/pz2qol/breedwincore.js';
+import {
+    AUTO_CPU, CPU_ORDER, CPU_STEPS, CUSTOM_STEPS, DEEP_PRESETS, PRESET_ORDER, PRESET_WORDS, cpuOf, deepJob, deepKey, deepResult, deepSettings,
     cancelDeep, dropDeepResults, durationText, estimateSeconds, getOptimiser, installDeep, latestDeepResult, msPerStartFor, onDeep, onOptimiser,
     setOptimiser, startDeep, stopDeep,
 } from '/js/mods/pz2qol/kinprogdeep.js';
-import { getPref, setPref } from '/js/mods/pz2qol/prefs.js';
-import { TUNE_PREF, applyTuning, tuningKey } from '/js/mods/pz2qol/kinprogtune.js';
 import { dlog } from '/js/mods/pz2qol/debuglog.js';
-import { FILL_STEPS, GENE_STEPS, cullPlan, geneScore } from '/js/mods/pz2qol/kincull.js';
+import { FILL_STEPS, GENE_STEPS, cullPlan } from '/js/mods/pz2qol/kincull.js';
 import { hideKinCard, kinBadge, sexClass, sexSymbol } from '/js/mods/pz2qol/kinui.js';
-import { clear, h, icon, setClass, setText } from '/js/mods/pz2qol/ui.js';
+import { clear, crossMark, h, icon, setClass, setText } from '/js/mods/pz2qol/ui.js';
 import { breadcrumb, reportError } from '/js/mods/pz2qol/errors.js';
-import { getUserData, updateUserData } from '/js/mods/pz2qol/userstore.js';
 import { paceSlider } from '/js/mods/pz2qol/pace.js';
 import { getAssignments, onAssignments, toggleAssignment, assignmentStorage, assignmentStorageReason } from '/js/mods/pz2qol/kinassign.js';
 import { isMuted, mutedSpecies, onMuted, setMuted } from '/js/mods/pz2qol/kinmute.js';
 import { canOpenTrade, onStorageCounts, openTrade, requestStorageCounts, tradeRow } from '/js/mods/pz2qol/tradejump.js';
 import { fetchAllRow, fetchRow } from '/js/mods/pz2qol/storagefetch.js';
 import {
-    btn as kitBtn, closeButton, closeOtherPanels, countPills, makeGuard, makeScroll, panelApi, placePanel, refreshBars, registerPanel,
+    ago, btn as kitBtn, closeButton, closeOtherPanels, countPills, makeGuard, makeScroll, panelApi, placePanel, refreshBars, registerPanel,
     remPx, restoreScroll, scrollBoxTo, speciesName, switchEl as kitSwitch, trunc, wheelScroll,
 } from '/js/mods/pz2qol/kinpanel.js';
 
@@ -100,6 +101,8 @@ const S = {
     modelTime: 0,
     model: null,
     after: null,
+    afterMemo: null,          // { model, plan, dest, after }: simulatedPlan's last answer
+    impactMemo: null,         // { model, after, species, sp, zoo }: planImpacts' last answer
     unsub: [],
     timer: 0,
     prog: null,               // the breeding programme preview: { species, state, step, info, results, ... }
@@ -111,43 +114,19 @@ const S = {
     storedView: null,         // withStored(model, answer): the merged pedigree (hover relatives)
 };
 
-// "Fewer moves <-> Best genetics" (kinprogramme.js PROGRAMME_STEPS, shared
-// with Auto mode)
-const PROG_STEPS = PROGRAMME_STEPS;
-const PROG_DEFAULT_STEP = PROGRAMME_DEFAULT_STEP;
-// The slider's last position is the player's default for every species and
-// zoo (prefs.js, the player save; developer, 2026-10-18).
-const PROG_STEP_PREF = 'progStep';
-
-function savedProgStep() {
-    const v = getPref(PROG_STEP_PREF);
-    return Number.isInteger(v) && v >= 0 && v < PROG_STEPS.length ? v : PROG_DEFAULT_STEP;
-}
-
 // Thin out: the last known "over the room" count per species (for the rail)
 const overBySpecies = new Map();
 // Thin out: the player's last choices (this session), for the next species
-const cullPrefs = { fill: 'balanced', genes: 'off', zeroFertility: true, oldAlways: false, young: false };
+const cullPrefs = { fill: 'balanced', genes: 'off', zeroFertility: true, oldAlways: false };
+// Thin out's keep marks, by kincull's whyCode
 const CULL_MARKS = {
-    'breeding core': { cls: 'core', text: 'core', title: 'The breeding core of this habitat: kept' },
+    core: { cls: 'core', text: 'core', title: 'The breeding core of this habitat: kept' },
     pregnant: { cls: 'preg', text: 'pregnant', title: 'Pregnant: never sent away' },
-    'best genes of the species': { cls: 'best', text: 'best', title: 'The best genes of the species: kept' },
-    'last breeder of its sex': { cls: 'best', text: 'last breeder', title: 'Every breeder of this sex has poor genes; the best of them stays so the species can still breed' },
-    'your choice': { cls: 'mine', text: 'your choice', title: 'You chose this' },
-    'on the move': { cls: 'moving', text: 'on the move', title: 'Already on the move' },
-    'away for now': { cls: 'moving', text: 'away', title: 'At the vet, in a quarantine or being carried: it comes back to this habitat and is kept' },
-};
-// The optimiser's budget on the board: it runs in slices (the page stays
-// responsive), so it can search longer than a one-go call.
-const PROG_SEARCH = { maxEvaluations: 3000000, timeBudgetMs: 6000 };
-// The group make-up per species, the player's choice (kept per zoo).
-const RATIO_STORE = 'kinRatio';
-const RATIO_SOURCE_WORDS = {
-    yours: 'your choice',
-    game: "the game's most per sex",
-    groups: "the game's social groups",
-    mating: 'the mating system',
-    none: 'not known',
+    best: { cls: 'best', text: 'best', title: 'The best genes of the species: kept' },
+    lastBreeder: { cls: 'best', text: 'last breeder', title: 'Every breeder of this sex has poor genes; the best of them stays so the species can still breed' },
+    mine: { cls: 'mine', text: 'your choice', title: 'You chose this' },
+    moving: { cls: 'moving', text: 'on the move', title: 'Already on the move' },
+    away: { cls: 'moving', text: 'away', title: 'At the vet, in a quarantine or being carried: it comes back to this habitat and is kept' },
 };
 
 // ------------------------------------------------------------ Auto mode
@@ -192,7 +171,7 @@ export function isBoardBusy(species) {
 // What the Auto panel can use of the board.
 function autoHelpers() {
     return {
-        btn, switchEl, guard, notice, renderAll, queueRender, makeScroll, restoreScroll, statTile, placeName,
+        btn, switchEl, guard, notice, renderAll, queueRender, makeScroll, restoreScroll, statTile, placeName: whereName,
         close: closeAuto,
         scroll: y => {
             if (y != null) S.scroll.auto = y;
@@ -253,20 +232,8 @@ function destKnown() {
     return !!(S.dest && S.dest.bySpecies && S.species && S.dest.bySpecies[S.species]);
 }
 
-function homeOf(a) {
-    return a.hab || (a.lt === 'trade' ? TRADE : 'away');
-}
-
-function placeName(model, to) {
-    if (to === TRADE) {
-        const d = destFor(model);
-        return (d && d.tradeCentre && d.tradeCentre.name) || 'Trade centre';
-    }
-    if (to === 'away') return 'Elsewhere';
-    const hb = model && model.habitats.get(String(to));
-    if (hb && hb.name) return hb.name;
-    const d = S.dest && (S.dest.habitats || []).find(x => String(x.id) === String(to));
-    return d ? d.name : String(to);
+function whereName(model, to) {
+    return placeName(model, to, destFor(model));
 }
 
 // --------------------------------------------------------------- skeleton
@@ -364,7 +331,8 @@ function onModel(model) {
     const said = [];
     for (const m of dropped) {
         S.reasons.delete(m.id);
-        if (S.sent.has(m.id)) continue;          // we moved it: expected
+        // we moved it: expected, and settled
+        if (S.sent.delete(m.id)) continue;
         const a = model.animals.get(String(m.id));
         if (!a) said.push(`${m.id} (no longer in the zoo)`);
         else if (a.moving) said.push(`${a.name} ${sexSymbol(a.sex)} (already on the move)`);
@@ -378,6 +346,23 @@ function onModel(model) {
     }
 }
 
+// The plan simulated on the model, and what it changes, again only when the
+// model, the plan or the habitat checks change (most clicks change none of them).
+function simulatedPlan(model, dest) {
+    const memo = S.afterMemo;
+    if (memo && memo.model === model && memo.plan === S.plan && memo.dest === S.dest) return memo.after;
+    const after = simulatePlan(model, S.plan, dest);
+    S.afterMemo = { model, plan: S.plan, dest: S.dest, after };
+    return after;
+}
+
+function planImpacts(model, after, species) {
+    const memo = S.impactMemo;
+    if (memo && memo.model === model && memo.after === after && memo.species === species) return memo;
+    S.impactMemo = { model, after, species, sp: planImpact(model, after, species), zoo: planImpact(model, after) };
+    return S.impactMemo;
+}
+
 function renderAll() {
     if (!S.root || !S.open) return;
     try {
@@ -389,12 +374,13 @@ function renderAll() {
             const list = speciesList(model, { muted: mutedSpecies() });
             if (!S.species || !list.some(s => s.species === S.species)) {
                 S.species = list.length ? list[0].species : null;
+                closeSpeciesPanels();
                 S.selected.clear();
                 if (S.species) loadDestinations(false);
             }
         }
         const dest = destFor(model);
-        S.after = model ? simulatePlan(model, S.plan, dest) : null;
+        S.after = model ? simulatedPlan(model, dest) : null;
         S.boxes = {};
         renderHead(model);
         renderRail(model);
@@ -489,7 +475,7 @@ function renderRail(model) {
         const on = s.species === S.species;
         const counts = visibleCounts(s.counts, showCovered);
         const pills = countPills(counts, { compact: true });
-        const worst = counts.risk ? 'risk' : counts.kin ? 'kin' : counts.future ? 'future' : counts.held ? 'held' : counts.covered ? 'covered' : 'none';
+        const worst = worstOf(counts) || 'none';
         const meta = [`${s.males}♂ ${s.females}♀`];
         if (s.juveniles) meta.push(`${s.juveniles} young`);
         meta.push(`${s.habitats.length} habitat${s.habitats.length === 1 ? '' : 's'}`);
@@ -566,12 +552,8 @@ function renderBoard(model, dest) {
         h('div.PZ2QoL_kpFlex'),
         tradeHead(),
         right));
-    // no other suitable habitat: say so
-    if (destKnown()) {
-        const ok = Object.entries(S.dest.bySpecies[S.species]).filter(([, d]) => d.ok).map(([id]) => id);
-        if (ok.length <= 1 && habs.size <= 1) {
-            el.appendChild(h('div.PZ2QoL_kbHint.warn', { text: `No other habitat suits ${speciesName(S.species)} right now. Build or extend one, or use the trade centre to make room.` }));
-        }
+    if (destKnown() && noOtherHabitat(S.dest.bySpecies[S.species], habs)) {
+        el.appendChild(h('div.PZ2QoL_kbHint.warn', { text: `No other habitat suits ${speciesName(S.species)} right now. Build or extend one, or use the trade centre to make room.` }));
     }
     if (S.prog && S.prog.species === S.species) {
         el.appendChild(programmeEl(model));
@@ -639,20 +621,26 @@ function fitColumns() {
     if (!board) return;
     const vpH = Math.floor(board.vp.getBoundingClientRect().height);
     if (!(vpH > 0)) return;
-    const pad = Math.ceil(remPx() * 0.75);
-    const colH = Math.max(remPx() * 8, vpH - pad);
+    const rem = remPx();
+    const colH = Math.max(rem * 8, vpH - Math.ceil(rem * 0.75));
+    // all writes, then all reads, then all writes: one layout, not one per column
     board.content.style.height = `${vpH}px`;
+    const cols = [];
     for (const { el } of S.colEls.values()) {
         if (!el || !el.parentNode) continue;
         el.style.height = `${colH}px`;
         const head = el.querySelector('.PZ2QoL_kbColHead');
         const body = el.querySelector('.PZ2QoL_kpScroll.kbColBody');
-        if (!head || !body) continue;
-        const inner = el.getBoundingClientRect().height - (el.offsetHeight - el.clientHeight);
-        const bodyH = Math.max(remPx() * 3, Math.floor((inner || colH) - head.getBoundingClientRect().height));
-        body.style.flex = '0 0 auto';
-        body.style.height = `${bodyH}px`;
+        if (head && body) cols.push({ el, head, body });
     }
+    const heights = cols.map(({ el, head }) => {
+        const inner = el.getBoundingClientRect().height - (el.offsetHeight - el.clientHeight);
+        return Math.max(rem * 3, Math.floor((inner || colH) - head.getBoundingClientRect().height));
+    });
+    cols.forEach(({ body }, i) => {
+        body.style.flex = '0 0 auto';
+        body.style.height = `${heights[i]}px`;
+    });
 }
 
 function waitingState() {
@@ -671,6 +659,12 @@ function waitingState() {
                 : btn('Rescan', 'Icon_CircleWithArrows', () => requestKinScan('board', { force: true }), { cls: 'primary', tint: 'white' })));
 }
 
+// Juveniles stay in a habitat until they are grown (the trade centre is no place to grow up).
+function youngStayText(list) {
+    const names = list.map(a => a.name).join(', ');
+    return `${names} ${list.length === 1 ? 'is' : 'are'} young: a juvenile stays in a habitat until it is grown, so Kin never sends one to the trade centre. Move ${list.length === 1 ? 'it' : 'them'} to another habitat instead.`;
+}
+
 // Can these animals be planned into this column? { ok, reason, unknown, noop }
 function dropCheck(model, c, ids) {
     if (!c) return { ok: false, reason: '' };
@@ -678,6 +672,8 @@ function dropCheck(model, c, ids) {
     if (c.kind === 'habitat' && c.dest && c.dest.ok === false) return { ok: false, reason: `${c.name}: ${c.dest.reason || 'not suitable for this species'}` };
     const movable = ids.map(id => model.animals.get(String(id))).filter(a => a && canMove(a));
     if (!movable.length) return { ok: false, reason: 'These animals cannot move right now.' };
+    const young = c.kind === 'trade' ? movable.filter(a => a.juv) : [];
+    if (young.length) return { ok: false, reason: youngStayText(young) };
     const planned = new Map(S.plan.map(m => [m.id, m.to]));
     const noop = movable.every(a => (planned.get(a.id) || homeOf(a)) === c.id);
     return { ok: true, reason: '', unknown: c.kind === 'habitat' && !c.dest, noop };
@@ -888,7 +884,7 @@ function storedCardEl(model, x) {
     const p0 = x.pairs[0];
     const kinLine = p0 ? h('span.PZ2QoL_kbKinLine', {
         text: `${relationWord(p0.rel, p0.other.sex)} ${trunc(p0.other.name, 10)}${x.pairs.length > 1 ? ` +${x.pairs.length - 1}` : ''}`,
-        title: x.pairs.map(p => `${relationWord(p.rel, p.other.sex)} ${p.other.name} (${placeName(model, homeOf(p.other)) || 'in the zoo'})`).join(', '),
+        title: x.pairs.map(p => `${relationWord(p.rel, p.other.sex)} ${p.other.name} (${whereName(model, homeOf(p.other)) || 'in the zoo'})`).join(', '),
     }) : null;
     const ft = fertilityTag(a);
     const why = canOpenTrade();
@@ -936,7 +932,7 @@ function tagsFor(a, x, model) {
     else if (!a.hab && a.lt && a.lt !== 'trade' && a.lt !== 'habitat') out.push(h('span.PZ2QoL_kbTag.away', { text: LT_WORDS[a.lt] || a.lt }));
     if (x && x.planned) {
         const before = model.animals.get(a.id);
-        out.push(h('span.PZ2QoL_kbTag.from', { text: `from ${trunc(placeName(model, before ? homeOf(before) : ''), 16)}` }));
+        out.push(h('span.PZ2QoL_kbTag.from', { text: `from ${trunc(whereName(model, before ? homeOf(before) : ''), 16)}` }));
     }
     const ft = fertilityTag(a);
     if (ft) out.push(h(`span.PZ2QoL_kbTag.${ft.cls}`, { text: ft.text, title: ft.title }));
@@ -994,14 +990,17 @@ function cardEl(model, c, x) {
         });
     }
     const relLabel = h('span.PZ2QoL_kbRelLabel');
+    const menuBtn = x.planned ? null : h('div.PZ2QoL_kbCardMenu', { title: 'Actions', onClick: guard('Menu', e => openMenu(a.id, e.currentTarget || e.target)) }, h('div.PZ2QoL_kbDot'), h('div.PZ2QoL_kbDot'), h('div.PZ2QoL_kbDot'));
+    // the panel's mousedown closes an open menu; its own button's click toggles it instead
+    if (menuBtn) menuBtn.addEventListener('mousedown', e => e.stopPropagation());
     const top = h('div.PZ2QoL_kbCardTop', null,
         h('div.PZ2QoL_kbCardName', { text: `${sexSymbol(a.sex)} ${trunc(a.name, 15)}`, title: a.name }),
         mates.length ? h('div.PZ2QoL_kpMated.inline', { title: 'Has a mate now' }, icon('Icon_Heart', 'white', 'xs')) : null,
         h('div.PZ2QoL_kpFlex'),
         x.severity ? kinBadge(x.severity, x.pairs.length, { compact: true }) : null,
         x.planned
-            ? h('div.PZ2QoL_kbCardX', { title: 'Remove this move from the plan', onClick: guard('Remove move', () => removeMove(a.id)) }, h('div.PZ2QoL_kpCloseX.a'), h('div.PZ2QoL_kpCloseX.b'))
-            : h('div.PZ2QoL_kbCardMenu', { title: 'Actions', onClick: guard('Menu', e => openMenu(a.id, e.currentTarget || e.target)) }, h('div.PZ2QoL_kbDot'), h('div.PZ2QoL_kbDot'), h('div.PZ2QoL_kbDot')));
+            ? h('div.PZ2QoL_kbCardX', { title: 'Remove this move from the plan', onClick: guard('Remove move', () => removeMove(a.id)) }, crossMark())
+            : menuBtn);
     const card = h(`div.PZ2QoL_kbCard.${cls.join('.')}`, { 'data-id': a.id, 'data-sev': sev, 'data-planned': x.planned ? '1' : '0' },
         h('div.PZ2QoL_kbStripe'),
         h('div.PZ2QoL_kbCardMain', null,
@@ -1061,7 +1060,7 @@ function ghostEl(model, l) {
             h('div.PZ2QoL_kbCardTop', null,
                 h('div.PZ2QoL_kbCardName', { text: `${sexSymbol(a.sex)} ${trunc(a.name, 17)}` }),
                 h('div.PZ2QoL_kpFlex'),
-                h('div.PZ2QoL_kbCardX', { title: 'Keep it here (remove the move)', onClick: guard('Remove move', () => removeMove(a.id)) }, h('div.PZ2QoL_kpCloseX.a'), h('div.PZ2QoL_kpCloseX.b'))),
+                h('div.PZ2QoL_kbCardX', { title: 'Keep it here (remove the move)', onClick: guard('Remove move', () => removeMove(a.id)) }, crossMark())),
             h('div.PZ2QoL_kbCardTags', null, h('div.PZ2QoL_kbArrow.small'), h('span.PZ2QoL_kbGoing', { text: trunc(l.toName, 24) }))));
     return node;
 }
@@ -1330,8 +1329,8 @@ function applyMoves(ids, to) {
     S.selected.clear();
     if (names.length) {
         notice(pregnant.length
-            ? `${names.join(', ')} → ${placeName(model, to)}: planned. ${pregnant.join(', ')} ${pregnant.length === 1 ? 'is' : 'are'} pregnant: the game allows the move, but she can't be sold and has to give birth first. Nothing moves until you run the plan.`
-            : `${names.join(', ')} → ${placeName(model, to)}: planned. Nothing moves until you run the plan.`, pregnant.length ? 'warn' : undefined);
+            ? `${names.join(', ')} → ${whereName(model, to)}: planned. ${pregnant.join(', ')} ${pregnant.length === 1 ? 'is' : 'are'} pregnant: the game allows the move, but she can't be sold and has to give birth first. Nothing moves until you run the plan.`
+            : `${names.join(', ')} → ${whereName(model, to)}: planned. Nothing moves until you run the plan.`, pregnant.length ? 'warn' : undefined);
         breadcrumb(pregnant.length ? 'kin_board_plan_pregnant' : 'kin_board_plan');
     }
     S.planTab = 'plan';
@@ -1393,6 +1392,10 @@ function execute() {
         return;
     }
     if (!S.plan.length) return;
+    if (S.pendingMove.size) {
+        notice('One move at a time: wait for the game to answer the last Move now, then run the plan.', 'warn');
+        return;
+    }
     const plan = S.plan.map(m => (m.byPlayer ? { id: m.id, to: m.to, byPlayer: true } : { id: m.id, to: m.to }));
     for (const m of plan) S.sent.add(m.id);
     // a deep search of a species about to change stops (its best is kept)
@@ -1403,13 +1406,26 @@ function execute() {
     closeMenu();
     breadcrumb('kin_board_execute');
     runPlan(plan, { destinations: destFor(model) }).then(r => {
+        settleSent(plan);
         if (r && r.ok === false && r.detail && !getPlanRun().finished) notice(r.detail, 'bad');
         queueRender();
     }, e => {
+        settleSent(plan);
         reportError('mod', 'Species board: the plan could not run', e);
         queueRender();
     });
     renderAll();
+}
+
+// After a run: the moves the game made leave the plan quietly; the ones it
+// skipped or refused stay, and a later drop of them is news again.
+function settleSent(plan) {
+    const ids = new Set(plan.map(m => m.id));
+    const mine = S.plan.filter(m => ids.has(m.id));
+    const kept = prunePlan(getKinModel(), mine);
+    S.plan = S.plan.filter(m => !ids.has(m.id) || kept.includes(m));
+    for (const m of mine) if (!kept.includes(m)) S.reasons.delete(m.id);
+    for (const id of ids) S.sent.delete(id);
 }
 
 // One move now, one click (like the game's own Move).
@@ -1429,7 +1445,11 @@ function moveNow(id, to) {
         notice(`${a.name} cannot be moved right now.`, 'warn');
         return;
     }
-    const where = placeName(model, to);
+    if (a.juv && to === TRADE) {
+        notice(youngStayText([a]), 'warn');
+        return;
+    }
+    const where = whereName(model, to);
     S.pendingMove.set(a.id, to);
     S.sent.add(a.id);
     closeMenu();
@@ -1441,8 +1461,9 @@ function moveNow(id, to) {
         S.pendingMove.delete(a.id);
         if (r && r.ok) {
             notice(`${a.name} ${sexSymbol(a.sex)} is on the way to ${where}.`, 'ok');
-            const m = getKinModel();
-            if (m) S.plan = S.plan.filter(x => x.id !== a.id);
+            // out of the plan here, so no later scan has to explain it
+            S.plan = S.plan.filter(x => x.id !== a.id);
+            S.sent.delete(a.id);
         }
         else {
             S.sent.delete(a.id);
@@ -1476,22 +1497,22 @@ function openMenu(id, anchor) {
     closeMenu();
     const planned = S.plan.find(m => m.id === a.id);
     const kids = [h('div.PZ2QoL_kbMenuTitle', { text: `${sexSymbol(a.sex)} ${a.name}` }),
-        h('div.PZ2QoL_kbMenuSub', { text: placeName(model, homeOf(a)) })];
+        h('div.PZ2QoL_kbMenuSub', { text: whereName(model, homeOf(a)) })];
     const running = getPlanRun().running;
     if (!canMove(a)) kids.push(h('div.PZ2QoL_kbMenuNote', { text: a.moving ? 'Already on the move.' : 'Cannot be moved from here.' }));
     else if (planned) {
         kids.push(h(`div.PZ2QoL_kbMenuItem.primary${running ? '.disabled' : ''}`, { onClick: guard('Move now', () => moveNow(a.id, planned.to)) },
-            h('span', { text: `Move now to ${trunc(placeName(model, planned.to), 22)}` })));
+            h('span', { text: `Move now to ${trunc(whereName(model, planned.to), 22)}` })));
         kids.push(h('div.PZ2QoL_kbMenuItem', { onClick: guard('Remove move', () => { closeMenu(); removeMove(a.id); }) }, h('span', { text: 'Remove from the plan' })));
     }
     else {
         const targets = S.columns.filter(c => c.kind !== 'trade' && c.id !== homeOf(a) && dropCheck(model, c, [a.id]).ok);
         // the trade centre first: the usual place to send surplus animals
         if (homeOf(a) !== TRADE) {
-            kids.push(h(`div.PZ2QoL_kbMenuItem.trade${running ? '.disabled' : ''}`, {
-                title: 'One move: a keeper takes it to the trade centre, where you can sell, trade or release it',
+            kids.push(h(`div.PZ2QoL_kbMenuItem.trade${running || a.juv ? '.disabled' : ''}`, {
+                title: a.juv ? youngStayText([a]) : 'One move: a keeper takes it to the trade centre, where you can sell, trade or release it',
                 onClick: guard('Move now', () => moveNow(a.id, TRADE)),
-            }, h('span', { text: `Send to ${trunc(placeName(model, TRADE), 22)}` })));
+            }, h('span', { text: `Send to ${trunc(whereName(model, TRADE), 22)}` })));
         }
         kids.push(h('div.PZ2QoL_kbMenuHead', { text: targets.length ? 'Move now to a habitat (one move)' : 'No other suitable habitat' }));
         for (const c of targets.slice(0, 8)) {
@@ -1573,13 +1594,13 @@ function renderPlan(model, dest) {
                 h('div.PZ2QoL_kbMoveText', { title: moveText(model, m, dest) },
                     h('div.PZ2QoL_kbMoveMain', null,
                         a ? h(`span.PZ2QoL_kbMoveName.${sexClass(a.sex)}`, { text: `${sexSymbol(a.sex)} ${trunc(a.name, 16)}` }) : h('span', { text: m.id }),
-                        h('span.PZ2QoL_kbMoveWhere', { text: `${trunc(placeName(model, a ? homeOf(a) : ''), 18)} → ${trunc(placeName(model, m.to), 20)}` })),
+                        h('span.PZ2QoL_kbMoveWhere', { text: `${trunc(whereName(model, a ? homeOf(a) : ''), 18)} → ${trunc(whereName(model, m.to), 20)}` })),
                     reason ? h('span.PZ2QoL_kbMoveWhy', { text: `Suggested: ${reason}` }) : null),
                 h(`div.PZ2QoL_kbMini${run.running || S.pendingMove.size ? '.disabled' : ''}`, {
                     title: 'Send just this move to the game now (one move)',
                     onClick: guard('Move now', () => moveNow(m.id, m.to)),
                 }, h('span', { text: 'Move now' })),
-                h('div.PZ2QoL_kbCardX', { title: 'Remove this move', onClick: guard('Remove move', () => removeMove(m.id)) }, h('div.PZ2QoL_kpCloseX.a'), h('div.PZ2QoL_kpCloseX.b'))));
+                h('div.PZ2QoL_kbCardX', { title: 'Remove this move', onClick: guard('Remove move', () => removeMove(m.id)) }, crossMark())));
         });
     }
     list.appendChild(box.wrap);
@@ -1604,9 +1625,7 @@ function impactEl(model, dest) {
         renderNotice();
         return wrap;
     }
-    const after = S.after || model;
-    const sp = planImpact(model, after, S.species);
-    const zoo = planImpact(model, after);
+    const { sp, zoo } = planImpacts(model, S.after || model, S.species);
     const name = speciesName(S.species);
     wrap.setAttribute('data-fixed', String(sp.risksFixed));
     wrap.setAttribute('data-created', String(sp.risksCreated));
@@ -1634,7 +1653,7 @@ function impactEl(model, dest) {
             left.length ? left : h('div.PZ2QoL_kpCount.sev_none', null, h('span.PZ2QoL_kpCountL', { text: 'No related pairs' }))));
         c.appendChild(h('div.PZ2QoL_kbImpactRow.faint', null, h('span', { text: `Zoo-wide inbreeding risks: ${zoo.before.risk} → ${zoo.after.risk}${zoo.risksCreated ? ` (${zoo.risksCreated} new)` : ''}` })));
         for (const p of sp.created.filter(q => q.severity === 'risk' || q.severity === 'kin')) {
-            c.appendChild(h(`div.PZ2QoL_kbCreated.sev_${p.severity}`, null, h('span', { text: `New ${p.severity === 'risk' ? 'inbreeding risk' : 'close kin'}: ${pairText(p)} in ${placeName(model, p.hab)}` })));
+            c.appendChild(h(`div.PZ2QoL_kbCreated.sev_${p.severity}`, null, h('span', { text: `New ${p.severity === 'risk' ? 'inbreeding risk' : 'close kin'}: ${pairText(p)} in ${whereName(model, p.hab)}` })));
         }
     }
     for (const pr of planProblems(model, S.plan, dest, { assignments: getAssignments(model) })) {
@@ -1696,9 +1715,11 @@ function actionsEl(model) {
             title: auto.title || '',
         }));
     }
+    const waiting = S.pendingMove.size > 0;
     const exec = btn(`Execute plan (${S.plan.length} move${S.plan.length === 1 ? '' : 's'})`, null, execute, {
-        cls: `primary.wide${!S.plan.length || blocked ? '.disabled' : ''}`,
-        title: 'Run the plan: one move at a time, each confirmed by the game; a move the game refuses is skipped',
+        cls: `primary.wide${!S.plan.length || blocked || waiting ? '.disabled' : ''}`,
+        title: waiting ? 'A Move now is waiting for the game; the plan can run once it answers'
+            : 'Run the plan: one move at a time, each confirmed by the game; a move the game refuses is skipped',
     });
     el.appendChild(exec);
     // first in the scrolling area, right under Execute
@@ -1717,15 +1738,8 @@ function actionsEl(model) {
 
 // ------------------------------------------------------ breeding programme
 
-// The species' habitats the game should describe: where it lives, where it
-// may go, and the ones set aside for it.
-function programmeHabitats(model, species) {
-    const ids = new Set();
-    for (const a of model.animals.values()) if (a.species === species && a.hab) ids.add(a.hab);
-    const d = S.dest && S.dest.bySpecies && S.dest.bySpecies[species];
-    if (d) for (const [id, v] of Object.entries(d)) if (v && v.ok) ids.add(String(id));
-    for (const [hab, set] of getAssignments(model)) if (set && set.has(species)) ids.add(String(hab));
-    return Array.from(ids);
+function habitatsToDescribe(model, species) {
+    return programmeHabitats(model, species, S.dest, getAssignments(model));
 }
 
 function openProgramme() {
@@ -1759,7 +1773,7 @@ function openProgramme() {
     const ready = destKnown() ? Promise.resolve() : requestDestinations(ids).then(d => {
         if (d) S.dest = d;
     }, () => {});
-    ready.then(() => requestSpeciesInfo(species, programmeHabitats(getKinModel() || model, species))).then(done, e => {
+    ready.then(() => requestSpeciesInfo(species, habitatsToDescribe(getKinModel() || model, species))).then(done, e => {
         reportError('mod', 'Species board: species facts failed', e, { silent: true });
         done(null);
     });
@@ -1811,81 +1825,19 @@ function recomputePanel() {
     requestDestinations(ids, { force: true }).then(d => {
         if (d) S.dest = d;
     }, () => {})
-        .then(() => requestSpeciesInfo(species, programmeHabitats(getKinModel() || model, species), { force: true }))
+        .then(() => requestSpeciesInfo(species, habitatsToDescribe(getKinModel() || model, species), { force: true }))
         .then(done, e => {
             reportError('mod', 'Species board: species facts failed', e, { silent: true });
             done(null);
         });
 }
 
-// The group make-up the player chose for a species ('auto': the game's).
-function ratioChoice(species) {
-    const all = getUserData(RATIO_STORE);
-    const v = all && typeof all === 'object' && !Array.isArray(all) ? all[species] : null;
-    return RATIO_CHOICES.includes(v) ? v : 'auto';
-}
-
-// Kept per zoo; replayed on top of the zoo's data if that is read later.
-function setRatioChoice(species, choice) {
-    updateUserData(RATIO_STORE, old => {
-        const all = Object.assign({}, old && typeof old === 'object' && !Array.isArray(old) ? old : {});
-        if (choice === 'auto') delete all[species];
-        else all[species] = choice;
-        return Object.keys(all).length ? all : undefined;
-    });
-}
-
 function cycleRatio(dir) {
     const p = S.prog;
     if (!p) return;
-    const i = RATIO_CHOICES.indexOf(ratioChoice(p.species));
-    const next = RATIO_CHOICES[(i + dir + RATIO_CHOICES.length) % RATIO_CHOICES.length];
-    setRatioChoice(p.species, next);
+    stepRatioChoice(p.species, dir);
     breadcrumb('kin_board_programme_ratio');
     renderAll();
-}
-
-const ratioPart = v => (v === Infinity ? 'any' : String(v));
-
-// '1♂ : 3♀', '1♂ : any ♀', 'mixed'
-function makeupShort(rule) {
-    return ratioKey(rule) === 'mixed' ? 'mixed' : `${ratioPart(rule.m)}♂ : ${ratioPart(rule.f)}♀`;
-}
-
-// The make-up in words, for the panel's subtitle.
-function makeupWords(rule) {
-    const key = ratioKey(rule);
-    let w;
-    if (key === 'mixed') w = rule.source === 'none' ? 'Unknown: mixed groups' : 'Mixed groups';
-    else if (key === '1:*') w = 'Harem: one breeding male per habitat';
-    else if (key === '*:1') w = 'One breeding female per habitat';
-    else if (key === '1:1') w = 'Pairs: one partner each';
-    else w = `Groups of ${ratioPart(rule.m)} ♂ to ${ratioPart(rule.f)} ♀`;
-    const caps = [rule.maxMales != null ? `${rule.maxMales} ♂` : '', rule.maxFemales != null ? `${rule.maxFemales} ♀` : ''].filter(Boolean);
-    return caps.length ? `${w}, at most ${caps.join(' and ')} per habitat` : w;
-}
-
-// (+ the fine tuning set in the Breeding window, kinprogtune.js; none: as before)
-function programmeKey(p) {
-    const tk = tuningKey(getPref(TUNE_PREF));
-    return `${p.step}|${p.useTrade !== false}|${ratioChoice(p.species)}${tk ? `|${tk}` : ''}`;
-}
-
-// What the programme depends on in the zoo: the species' animals (where they
-// are, whether they breed or move, their mates) and its habitat assignments.
-// A scan that changes nothing of it (another species, ages creeping up)
-// keeps the plan, so a big species is not searched again and again.
-function programmeSig(model, species) {
-    const rows = [];
-    for (const a of model.animals.values()) {
-        if (a.species !== species || a.exhibit) continue;
-        rows.push([a.id, a.hab || '', a.lt || '', a.moving ? 1 : 0, a.sex, a.juv ? 1 : 0, a.contra ? 1 : 0, a.infertile ? 1 : 0,
-            a.alive === false ? 0 : 1, (a.fert && a.fert.state) || '', (a.mates || []).join('+'), (a.par || []).join('+'), a.preg ? 1 : 0].join(','));
-    }
-    rows.sort();
-    const assigned = [];
-    for (const [hab, set] of getAssignments(model)) if (set && set.has(species)) assigned.push(String(hab));
-    return rows.join(';') + '|' + assigned.sort().join(',');
 }
 
 // The optimiser's result for the current choices, cached per choices and
@@ -1898,7 +1850,7 @@ function programmeResult() {
     if (!p || !model || p.state !== 'ready') return null;
     if (p.modelRef !== model) {
         p.modelRef = model;
-        const sig = programmeSig(model, p.species);
+        const sig = programmeSignature(model, p.species, getAssignments(model));
         if (sig !== p.sig) {
             p.sig = sig;
             p.results = new Map();
@@ -1929,7 +1881,8 @@ function startProgramme(p, model, key) {
     p.job = job;
     const live = () => !job.cancelled && S.prog === p;
     breadcrumb('kin_board_programme_search');
-    const cpu = cpuOf();
+    // it starts by itself as the zoo changes: the gentle pace, the player plays meanwhile
+    const cpu = AUTO_CPU;
     planProgrammeAsync(model, p.species, p.info || {}, destFor(model), {
         assignments: getAssignments(model),
         options: programmeOptions(p),
@@ -1959,14 +1912,6 @@ function startProgramme(p, model, key) {
         reportError('ui', 'Species board: the breeding programme failed', e);
         queueRender();
     });
-}
-
-// The programme's own options (both engines).
-function programmeOptions(p) {
-    const st = PROG_STEPS[p.step];
-    const o = { moveCost: st.cost, useTradeCentre: p.useTrade !== false, ratio: ratioChoice(p.species) };
-    if (st.outsider != null) o.outsiderCost = st.outsider;
-    return applyTuning(Object.assign(o, PROG_SEARCH), getPref(TUNE_PREF));
 }
 
 // ----------------------------------------------------------- deep search
@@ -2021,7 +1966,7 @@ function runDeep(p, model, { resume = null, auto = false } = {}) {
         species: p.species, key, dkey: deepKey(opt), psig: sig, breeders: breedersOf(classic),
         model, info: p.info || {}, dest: destFor(model), assignments: getAssignments(model), options: programmeOptions(p),
         // Classic's plan for the same setting and zoo is start 0
-        warm: classic.moves, warmTotal: classic.score, resume, settings, cpu: cpuOf(opt),
+        warm: classic.moves, warmTotal: classic.score, resume, settings, cpu: auto ? AUTO_CPU : cpuOf(opt),
     });
     renderAll();
     return true;
@@ -2134,9 +2079,8 @@ function deepStatusEl(p, model, view) {
     if (e) {
         const gain = gainText(e.r.score, e.warmTotal) || 'the same as Classic';
         if (view.stale) {
-            const n = e.r.moves.length;
             return row('stale',
-                h('span', { text: `${other}The breeders changed since this deep search (${n} move${n === 1 ? '' : 's'}; some may no longer apply). Recompute, or run it again.` }),
+                h('span', { text: `${other}${staleDeepText(view)} Recompute, or run it again.` }),
                 runBtn(withStop('Run deep search')));
         }
         if (e.stopped && e.resume) {
@@ -2236,10 +2180,6 @@ function renderProgrammeProgress(v) {
     for (const n of root.querySelectorAll('.PZ2QoL_kbProgBusyPct')) setText(n, pct);
 }
 
-function placeOfHab(model, hab) {
-    return hab === TRADE ? placeName(model, TRADE) : hab === 'away' ? 'Elsewhere' : placeName(model, hab);
-}
-
 // Who it would breed with in its new group, for the plan's reason line.
 function programmeReason(model, a, to, groups, info) {
     if (to === TRADE) return 'no place in a breeding group (to trade or release)';
@@ -2271,10 +2211,10 @@ function useProgramme() {
     S.reasons.clear();
     for (const m of r.moves) {
         const a = model.animals.get(String(m.id));
-        if (!a || !canMove(a) || isPinned(a)) continue;
+        if (!a || !canMove(a) || (isPinned(a) && !mustHouse(a))) continue;
         plan = setMove(model, plan, a.id, m.to);
-        // a non-breeder over the make-up says so (kinprogramme.js keepSpares)
-        S.reasons.set(a.id, m.spare ? `${m.reason} (to trade or release)` : programmeReason(model, a, m.to, r.groups, S.prog && S.prog.info));
+        // a young or pregnant one into a habitat and a non-breeder over the make-up (kinprogramme.js keepSpares) keep their own reason
+        S.reasons.set(a.id, isHousingMove(m) ? m.reason : m.spare ? `${m.reason} (to trade or release)` : programmeReason(model, a, m.to, r.groups, S.prog && S.prog.info));
     }
     S.plan = plan;
     S.prog = null;
@@ -2302,8 +2242,8 @@ function programmeWarnings(model, p, r) {
         const noSpace = r.habitats.filter(hb => !(hs[hb] && hs[hb].available));
         const busy = r.habitats.filter(hb => hs[hb] && hs[hb].calculating);
         const fall = info.social && info.social.max > 0 ? `the group size (up to ${info.social.max})` : `a default of ${PROGRAMME_DEFAULTS.defaultCapacity} adults`;
-        if (noSpace.length) out.push(`No space data for ${noSpace.map(hb => placeOfHab(model, hb)).join(', ')}: room there comes from ${fall}.`);
-        if (busy.length) out.push(`The game is still measuring ${busy.map(hb => placeOfHab(model, hb)).join(', ')}: its space may change.`);
+        if (noSpace.length) out.push(`No space data for ${noSpace.map(hb => whereName(model, hb)).join(', ')}: room there comes from ${fall}.`);
+        if (busy.length) out.push(`The game is still measuring ${busy.map(hb => whereName(model, hb)).join(', ')}: its space may change.`);
     }
     return out;
 }
@@ -2369,30 +2309,33 @@ function programmeEl(model) {
             renderAll();
         }),
     }, h('span', { text: `${p.useTrade !== false ? '☑' : '☐'} Use the trade centre (${r.tradeWaiting} waiting)` })) : null;
-    // the group make-up: the game's (auto) or the player's choice
-    const auto = choice === 'auto';
-    const makeup = h(`div.PZ2QoL_kbRatio${auto ? '' : '.mine'}`, {
-        'data-ratio': choice,
+    // the group make-up: the game's (auto, or fixed by the species) or the player's choice
+    const fixed = makeupFixed(rule);
+    const auto = fixed || choice === 'auto';
+    const makeup = h(`div.PZ2QoL_kbRatio${auto ? '' : '.mine'}${fixed ? '.fixed' : ''}`, {
+        'data-ratio': fixed ? 'auto' : choice,
         'data-rule': ratioKey(rule),
         'data-source': rule.source,
-        title: `Group make-up: how many females one breeding male breeds with (or the reverse). ${auto ? `Auto: from ${RATIO_SOURCE_WORDS[rule.source] || 'the game'}.` : 'Your choice for this species, kept for this zoo.'} `
-            + 'The arrows step through: auto, pairs (1:1), one male with 2 to 5 females, one male with any number (harem), 2 or 3 males with one female, any males with one female, mixed groups. '
-            + 'The programme fills each habitat towards this make-up from the trade centre and from other habitats, and moves the surplus on.',
+        title: fixed
+            ? `Only the leader breeds in this species (the game's rule): the programme plans around the leader, so there is no make-up to choose.`
+            : `Group make-up: how many females one breeding male breeds with (or the reverse). ${auto ? `Auto: from ${RATIO_SOURCE_WORDS[rule.source] || 'the game'}.` : 'Your choice for this species, kept for this zoo.'} `
+                + 'The arrows step through: auto, pairs (1:1), one male with 2 to 5 females, one male with any number (harem), 2 or 3 males with one female, any males with one female, mixed groups. '
+                + 'The programme fills each habitat towards this make-up from the trade centre and from other habitats, and moves the surplus on.',
     },
-        h('div.PZ2QoL_kbRatioArrow.prev', { title: 'Previous make-up', onClick: guard('Programme make-up', () => cycleRatio(-1)) }, h('span', { text: '‹' })),
+        fixed ? null : h('div.PZ2QoL_kbRatioArrow.prev', { title: 'Previous make-up', onClick: guard('Programme make-up', () => cycleRatio(-1)) }, h('span', { text: '‹' })),
         h('div.PZ2QoL_kbRatioText', null,
-            h('span.PZ2QoL_kbRatioLabel', { text: auto ? 'Make-up (auto)' : 'Make-up' }),
+            h('span.PZ2QoL_kbRatioLabel', { text: fixed ? 'Make-up (the game)' : auto ? 'Make-up (auto)' : 'Make-up' }),
             h('span.PZ2QoL_kbRatioValue', { text: makeupShort(rule) })),
-        h('div.PZ2QoL_kbRatioArrow.next', { title: 'Next make-up', onClick: guard('Programme make-up', () => cycleRatio(1)) }, h('span', { text: '›' })));
+        fixed ? null : h('div.PZ2QoL_kbRatioArrow.next', { title: 'Next make-up', onClick: guard('Programme make-up', () => cycleRatio(1)) }, h('span', { text: '›' })));
     // head: title, the slider, the buttons
     const steps = h('div.PZ2QoL_kbSteps', null,
         h('span.PZ2QoL_kbStepEnd', { text: 'Fewer moves' }),
-        PROG_STEPS.map((st, i) => h(`div.PZ2QoL_kbStep${i === p.step ? '.on' : ''}`, {
+        PROGRAMME_STEPS.map((st, i) => h(`div.PZ2QoL_kbStep${i === p.step ? '.on' : ''}`, {
             'data-step': String(i),
             title: st.cost ? `${st.label}: each move costs ${st.cost} (in expected-young units)` : `${st.label}: moves cost nothing; only the young count (a move that gains nothing is still left out)`,
             onClick: guard('Programme step', () => {
                 p.step = i;
-                setPref(PROG_STEP_PREF, i === PROG_DEFAULT_STEP ? undefined : i);
+                saveProgStep(i);
                 renderAll();
             }),
         }, h('div.PZ2QoL_kbStepDot'))),
@@ -2456,7 +2399,7 @@ function groupEl(model, hab, g, r, moved) {
     const node = h(`div.PZ2QoL_kbGroup${trade ? '.trade' : ''}${over ? '.over' : ''}${animals.length ? '' : '.none'}`, { 'data-hab': hab });
     node.appendChild(h('div.PZ2QoL_kbGroupHead', null,
         icon(trade ? 'IconTradeCentre' : 'IconHabitat', 'brown', 'sm'),
-        h('div.PZ2QoL_kbGroupName', { text: trunc(placeOfHab(model, hab), 22), title: placeOfHab(model, hab) })));
+        h('div.PZ2QoL_kbGroupName', { text: trunc(whereName(model, hab), 22), title: whereName(model, hab) })));
     node.appendChild(h('div.PZ2QoL_kbGroupCap', {
         text: trade ? 'Leftovers: no place in a breeding group'
             : `${adults} adult${adults === 1 ? '' : 's'}${cap != null ? ` · room for ${cap}` : ''}${over ? ' · over' : ''}`,
@@ -2480,7 +2423,7 @@ function groupEl(model, hab, g, r, moved) {
         const incoming = moved.has(a.id) && home !== hab;
         return h(`div.PZ2QoL_kbGroupAnimal.${sexClass(a.sex)}${incoming ? '.in' : ''}`, { 'data-id': a.id },
             h('span.PZ2QoL_kbGroupWho', { text: `${sexSymbol(a.sex)} ${trunc(a.name, 15)}`, title: a.name }),
-            incoming ? h('span.PZ2QoL_kbGroupFrom', null, h('div.PZ2QoL_kbArrow.small'), h('span', { text: `from ${trunc(placeOfHab(model, home), 12)}` })) : null,
+            incoming ? h('span.PZ2QoL_kbGroupFrom', null, h('div.PZ2QoL_kbArrow.small'), h('span', { text: `from ${trunc(whereName(model, home), 12)}` })) : null,
             a.preg ? h('span.PZ2QoL_kbTag.preg', { text: 'pregnant · stays', title: `Pregnant: ${PREGNANT_STAYS}. The programme never moves her; it can still bring partners to her.` }) : null);
     };
     const males = animals.filter(a => a.sex === Sex.Male);
@@ -2503,7 +2446,7 @@ function groupEl(model, hab, g, r, moved) {
         for (const l of leaving) {
             node.appendChild(h(`div.PZ2QoL_kbGroupAnimal.out.${sexClass(l.a.sex)}`, null,
                 h('span.PZ2QoL_kbGroupWho', { text: `${sexSymbol(l.a.sex)} ${trunc(l.a.name, 12)}` }),
-                h('span.PZ2QoL_kbGroupFrom', null, h('div.PZ2QoL_kbArrow.small'), h('span', { text: trunc(placeOfHab(model, l.to), 14) }))));
+                h('span.PZ2QoL_kbGroupFrom', null, h('div.PZ2QoL_kbArrow.small'), h('span', { text: trunc(whereName(model, l.to), 14) }))));
         }
     }
     return node;
@@ -2548,15 +2491,23 @@ function adviseContraception(id) {
     renderAll();
 }
 
+// How far a side panel's scroll box (programme, thin out, Auto mode) may
+// reach: the board's bottom, never past the plan bar under it. An unsized
+// panel stretches the board first, so the board alone overstates it.
+function panelBottom() {
+    const board = S.el.board.getBoundingClientRect().bottom;
+    const plan = S.el.plan ? S.el.plan.getBoundingClientRect() : null;
+    return plan && plan.height > 0 ? Math.min(board, plan.top) : board;
+}
+
 // Like the columns: the group strip gets its height in pixels after layout.
 function fitProgramme() {
     const box = S.boxes.prog;
     if (!box || !S.el.board) return;
     try {
-        const board = S.el.board.getBoundingClientRect();
         const top = box.wrap.getBoundingClientRect().top;
         const pad = Math.ceil(remPx() * 0.45);
-        const hgt = Math.max(remPx() * 6, Math.floor(board.bottom - top - pad));
+        const hgt = Math.max(remPx() * 6, Math.floor(panelBottom() - top - pad));
         box.wrap.style.flex = '0 0 auto';
         box.wrap.style.height = `${hgt}px`;
         setTimeout(() => refreshBars({ prog: box }), 0);
@@ -2600,7 +2551,7 @@ function openCull() {
     const ready = destKnown() ? Promise.resolve() : requestDestinations(ids).then(d => {
         if (d) S.dest = d;
     }, () => {});
-    ready.then(() => requestSpeciesInfo(species, programmeHabitats(getKinModel() || model, species))).then(done, e => {
+    ready.then(() => requestSpeciesInfo(species, habitatsToDescribe(getKinModel() || model, species))).then(done, e => {
         reportError('mod', 'Species board: species facts failed', e, { silent: true });
         done(null);
     });
@@ -2626,12 +2577,12 @@ function cullResult() {
     const model = getKinModel();
     if (!c || !model || c.state !== 'ready') return null;
     const ratio = ratioChoice(c.species);
-    const key = [c.fill, c.oldAlways, c.genes, c.zeroFertility, c.young, ratio, Array.from(c.keepIds).sort().join(','), Array.from(c.cullIds).sort().join(',')].join('|');
+    const key = [c.fill, c.oldAlways, c.genes, c.zeroFertility, ratio, Array.from(c.keepIds).sort().join(','), Array.from(c.cullIds).sort().join(',')].join('|');
     if (c.modelRef === model && c.key === key) return c.result;
     let r = null;
     try {
         r = cullPlan(model, c.species, c.info || {}, {
-            options: { fill: cullFill(c), oldAlways: c.oldAlways, genes: c.genes, zeroFertility: c.zeroFertility, young: c.young, keepIds: c.keepIds, cullIds: c.cullIds, ratio },
+            options: { fill: cullFill(c), oldAlways: c.oldAlways, genes: c.genes, zeroFertility: c.zeroFertility, keepIds: c.keepIds, cullIds: c.cullIds, ratio },
         });
         c.error = null;
         if (r) {
@@ -2740,7 +2691,6 @@ function cullEl(model) {
     };
     const zero = sw('zeroFertility', '0% fertility genes', 'Animals with a 0% fertility gene leave from every habitat, full or not (they pass it on to their young)');
     const old = sw('oldAlways', 'Too old or infertile', 'Animals past breeding age or infertile leave even where there is room');
-    const young = sw('young', 'Young too', 'The gene rules also pick young animals (they carry the same genes)');
     const words = { polygyny: 'harem', polyandry: 'one breeding female per habitat', monogamy: 'pairs', mixed: 'mixed groups' };
     wrap.appendChild(h('div.PZ2QoL_kbProgHead', null,
         h('div.PZ2QoL_kbProgTitles', null,
@@ -2752,16 +2702,16 @@ function cullEl(model) {
         btn(`Send ${n} to the trade centre`, null, useCull, { cls: `primary${n ? '' : '.disabled'}`, title: 'Put these moves in the plan; Execute (or Move now) on the board sends them, one at a time' }),
         cancel));
     wrap.appendChild(h('div.PZ2QoL_kbCullBar', null,
-        h('div.PZ2QoL_kbCullLabel', { text: 'Poor genes' }), genes, zero, old, young, h('div.PZ2QoL_kpFlex'),
+        h('div.PZ2QoL_kbCullLabel', { text: 'Poor genes' }), genes, zero, old, h('div.PZ2QoL_kpFlex'),
         h('div.PZ2QoL_kbCullHint', { text: 'From the trade centre you can sell them (Animal Storage, Market lister), trade or release them.' })));
     if (r.poorKept) {
         wrap.appendChild(h('div.PZ2QoL_kbCullNote', { text: `${r.poorKept} with poor genes stay${r.poorKept === 1 ? 's' : ''}: pregnant, on the move, kept by you, or the last breeder of its sex. Run Thin out again later.` }));
     }
     if (r.estimated) {
-        wrap.appendChild(h('div.PZ2QoL_kbProgWarn', { text: `The game gave no room for these habitats: Thin out keeps ${Math.round(cullFill(c) * 100)}% of the current adults.` }));
+        wrap.appendChild(h('div.PZ2QoL_kbProgWarn', { text: 'The game gave no room for these habitats, so Thin out sends none away for room: only for poor genes, old age (when chosen) or by your choice.' }));
     }
     else {
-        const guess = r.habitats.filter(hb => !hb.room).map(hb => placeOfHab(model, hb.hab));
+        const guess = r.habitats.filter(hb => !hb.room).map(hb => whereName(model, hb.hab));
         if (guess.length) wrap.appendChild(h('div.PZ2QoL_kbProgWarn', { text: `No room from the game for ${guess.join(', ')}: there the current adults count as full.` }));
     }
     const b = r.before, a = r.after;
@@ -2789,7 +2739,7 @@ function cullRow(model, entry, leaving) {
     const a = model.animals.get(entry.id);
     if (!a) return null;
     const tag = fertilityTag(a);
-    const mark = !leaving && entry.why ? CULL_MARKS[entry.why] : null;
+    const mark = !leaving && entry.whyCode ? CULL_MARKS[entry.whyCode] : null;
     const gene = entry.gene != null ? Math.round(entry.gene * 100) : null;
     const node = h(`div.PZ2QoL_kbCullRow.${sexClass(a.sex)}.${leaving ? 'leave' : 'keep'}`, {
         'data-id': a.id,
@@ -2807,7 +2757,7 @@ function cullRow(model, entry, leaving) {
         gene != null ? h('span.PZ2QoL_kbGene', { text: String(gene), title: `Gene score ${gene}` }) : null,
         leaving
             ? h('span.PZ2QoL_kbCullUndo', { text: 'keep' })
-            : h('div.PZ2QoL_kbCullX', null, h('div.PZ2QoL_kpCloseX.a'), h('div.PZ2QoL_kpCloseX.b'))),
+            : h('div.PZ2QoL_kbCullX', null, crossMark())),
     leaving ? h('div.PZ2QoL_kbCullWhy', { text: entry.reason }) : null);
     return node;
 }
@@ -2817,7 +2767,7 @@ function cullHabEl(model, hb) {
     const node = h(`div.PZ2QoL_kbGroup.PZ2QoL_kbCullHab${over ? '.over' : ''}`, { 'data-hab': hb.hab });
     node.appendChild(h('div.PZ2QoL_kbGroupHead', null,
         icon('IconHabitat', 'brown', 'sm'),
-        h('div.PZ2QoL_kbGroupName', { text: trunc(placeOfHab(model, hb.hab), 22), title: placeOfHab(model, hb.hab) })));
+        h('div.PZ2QoL_kbGroupName', { text: trunc(whereName(model, hb.hab), 22), title: whereName(model, hb.hab) })));
     node.appendChild(h('div.PZ2QoL_kbGroupCap', {
         text: `${hb.adults} adult${hb.adults === 1 ? '' : 's'} · room for ${hb.capacity}${hb.room ? '' : '?'} → keep ${hb.target}${hb.juveniles ? ` · ${hb.juveniles} young` : ''}`,
         title: hb.room ? 'Room from the game (group size and space)' : 'The game gave no room: the current adults count as full',
@@ -2844,9 +2794,8 @@ function fitCull() {
     const box = S.boxes.cull;
     if (!box || !S.el.board) return;
     try {
-        const board = S.el.board.getBoundingClientRect();
         const top = box.wrap.getBoundingClientRect().top;
-        const hgt = Math.max(remPx() * 6, Math.floor(board.bottom - top - Math.ceil(remPx() * 0.45)));
+        const hgt = Math.max(remPx() * 6, Math.floor(panelBottom() - top - Math.ceil(remPx() * 0.45)));
         box.wrap.style.flex = '0 0 auto';
         box.wrap.style.height = `${hgt}px`;
         setTimeout(() => refreshBars({ cull: box }), 0);
@@ -2861,9 +2810,8 @@ function fitAuto() {
     const box = S.boxes.auto;
     if (!box || !S.el.board) return;
     try {
-        const board = S.el.board.getBoundingClientRect();
         const top = box.wrap.getBoundingClientRect().top;
-        const hgt = Math.max(remPx() * 6, Math.floor(board.bottom - top - Math.ceil(remPx() * 0.45)));
+        const hgt = Math.max(remPx() * 6, Math.floor(panelBottom() - top - Math.ceil(remPx() * 0.45)));
         box.wrap.style.flex = '0 0 auto';
         box.wrap.style.height = `${hgt}px`;
         setTimeout(() => refreshBars({ auto: box }), 0);
@@ -2882,8 +2830,7 @@ function renderFoot() {
     let text = 'No data yet';
     if (!getKinSettings().enabled) text = 'Kin is off';
     else if (model && S.modelTime) {
-        const s = Math.round((Date.now() - S.modelTime) / 1000);
-        text = `Updated ${s < 5 ? 'just now' : s < 60 ? `${s} s ago` : `${Math.round(s / 60)} min ago`}`;
+        text = `Updated ${ago(Date.now() - S.modelTime)}`;
         if (model.mode === 'franchise') text += ' · Franchise zoo';
     }
     setText(el, text);
@@ -2924,9 +2871,19 @@ function loadDestinations(force) {
     });
 }
 
+// The programme, Thin out and Auto panels belong to one species: another
+// species closes them (a hidden one would still recompute, hold Esc and
+// keep Auto mode waiting).
+function closeSpeciesPanels() {
+    S.prog = null;
+    S.cull = null;
+    S.auto = null;
+}
+
 function focusSpecies(species, animalId) {
     if (species !== S.species) {
         S.species = species;
+        closeSpeciesPanels();
         S.selected.clear();
         S.scroll.board = 0;
         S.scroll.cols = {};
@@ -3074,11 +3031,37 @@ export function isSpeciesBoardOpen() {
     return S.open;
 }
 
+// Another park (or the same one loaded again) hands out entity ids afresh:
+// a staged move, a sent id or a habitat check of the last one could name
+// another animal now. reason: 'park' or 'data' (the zoo's data became
+// readable); none counts as a park.
+function onStoreReset(reason) {
+    if (reason && reason !== 'park') return;
+    breadcrumb('kin_board_park_reset');
+    cancelDrag();
+    closeMenu();
+    closeSpeciesPanels();
+    S.plan = [];
+    S.reasons.clear();
+    S.selected.clear();
+    S.sent.clear();
+    S.pendingMove.clear();
+    S.dest = null;
+    S.storedBy.clear();
+    S.storedTried.clear();
+    S.storedView = null;
+    S.columns = [];
+    S.after = null;
+    S.lastModel = undefined;
+    queueRender();
+}
+
 let installed = false;
 export function installSpeciesBoard() {
     if (installed) return true;
     installed = true;
     installDeep();
+    if (typeof engine !== 'undefined') engine.on('PZ2QoL_StoreReset', guard('Park reset', onStoreReset));
     document.addEventListener('keydown', e => {
         if (!S.open) return;
         if (e.key !== 'Escape' && e.keyCode !== 27) return;

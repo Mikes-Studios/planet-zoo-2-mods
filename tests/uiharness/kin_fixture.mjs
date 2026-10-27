@@ -116,3 +116,15 @@ export async function applySnapshot(page, snapshot) {
         kin.applyKinSnapshot(snap);
     }, snapshot);
 }
+
+// A Franchise snapshot lets the Market's fresh-blood check (marketmates.js)
+// ask about a species' storage at once, before a scenario's fake Lua side
+// answers: that ask times out first, and the stored cache starts empty.
+export async function settleStoredAsks(page, species) {
+    await page.evaluate(async sp => {
+        const moves = await import('/js/mods/pz2qol/kinmoves.js');
+        const end = Date.now() + 10000;
+        while (moves.isAskingStored(sp) && Date.now() < end) await new Promise(r => setTimeout(r, 100));
+        moves._clearStoredCache();
+    }, species);
+}

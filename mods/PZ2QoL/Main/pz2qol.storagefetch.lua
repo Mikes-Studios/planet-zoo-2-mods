@@ -14,9 +14,9 @@
 --    3. back in the zoo PZ2QoL.StorageSend takes the game's Move-screen
 --       request and the park page sends each arrival to the trade centre,
 --       one at a time.
---  The request is handed over with fresh = true ONCE: a later hello (page
---  reloaded, Storage opened again) gets fresh = false, and the page then
---  waits for a click instead of counting down.
+--  The request is handed over with fresh = true ONCE, right after the click:
+--  a later hello (page reloaded, Storage opened again) gets fresh = false,
+--  and the page then waits for a click instead of counting down.
 --    JS -> Lua  PZ2QoL_FetchStart(req, species, exclude) -> PZ2QoL_FetchStartResult(req, ok, detail, room)
 --    JS -> Lua  PZ2QoL_FetchHello()                    (hub page, on load / Storage shown)
 --    Lua -> JS  PZ2QoL_FetchPending(seq, species, room, exclude, fresh)
@@ -27,16 +27,17 @@ local global   = _G
 local api      = global.api
 local pcall    = global.pcall
 local tostring = global.tostring
-local tonumber = global.tonumber
-local type     = global.type
 local string   = global.string
+local Handover  = global.require("PZ2QoL.Handover")
+local ParkReads = global.require("PZ2QoL.ParkReads")
 
 local Fetch = module(...)
 
 Fetch.nPendingSeconds = 600 -- a request older than this is dropped
+Fetch.nFreshSeconds = 120   -- the hub's world transition after the click takes less
 Fetch.nMaxExclude = 16000   -- characters of the exclude list ("Bring all": the whole zoo)
 Fetch.sAllSpecies = "*"     -- "Bring all": every species in storage (the page's ALL_SPECIES)
-Fetch.tPending = nil        -- { nSeq, sSpecies, nRoom, sExclude, nTime, bDelivered }
+Fetch.tPending = nil        -- { nSeq, sSpecies, nRoom, sExclude, sZoo, nTime, bDelivered }
 Fetch.tLastClick = nil      -- { sZoo, sMode, nTime }: read by StorageSend's arm
 Fetch.nSeq = 0
 Fetch.tViews = global.setmetatable({}, { __mode = "k" })
@@ -67,8 +68,7 @@ local function now()
 end
 
 local function kin()
-	local Core = Fetch.Core
-	return (Core and Core.Kin) or global.package.loaded["pz2qol.kin"]
+	return global.package.loaded["pz2qol.kin"]
 end
 
 local function tradeJump()
@@ -76,34 +76,30 @@ local function tradeJump()
 	return (Core and Core.TradeJump) or global.package.loaded["pz2qol.tradejump"]
 end
 
-local function call(o, sName, ...)
-	if o == nil then
-		return nil
+-- The exclude list from the page: park animals of the species as "g:<guid>"
+-- and "n:<sex>:<species>:<name>" items, comma separated. Kept as text (the
+-- hub page matches it); only printable ASCII, no quotes, capped. The named
+-- animals ("m:" items) come first; nil when the cap would cut one of them,
+-- since the hub would then bring every stored animal instead.
+local function namedCount(s)
+	local n = 0
+	for _ in string.gmatch("," .. s, ",m:") do
+		n = n + 1
 	end
-	local fn = nil
-	pcall(function() fn = o[sName] end)
-	if type(fn) ~= "function" then
-		return nil
-	end
-	local bOk, v = pcall(fn, o, ...)
-	if not bOk then
-		return nil
-	end
-	return v
+	return n
 end
 
--- The exclude list from the page: park animals of the species as "g:<guid>"
--- and "n:<sex>:<name>" items, comma separated. Kept as text (the hub page
--- matches it); only printable ASCII, no quotes, capped.
 local function cleanExclude(s)
-	s = tostring(s or "")
-	s = string.gsub(s, "[^%w_:%-%.,%s]", "")
-	if #s > Fetch.nMaxExclude then
-		s = string.sub(s, 1, Fetch.nMaxExclude)
-		-- never a half item
-		s = string.gsub(s, ",[^,]*$", "")
+	s = string.gsub(tostring(s or ""), "[^%w_:%-%.,%s]", "")
+	if #s <= Fetch.nMaxExclude then
+		return s
 	end
-	return s
+	-- never a half item
+	local sCut = string.gsub(string.sub(s, 1, Fetch.nMaxExclude), ",[^,]*$", "")
+	if namedCount(sCut) < namedCount(s) then
+		return nil
+	end
+	return sCut
 end
 
 -----------------------------------------------------------------------
@@ -120,7 +116,7 @@ Fetch.Start = function(self, oUI, sReq, sSpecies, sExclude)
 	if TJ == nil or Kin == nil then
 		return answer(false, "nohub")
 	end
-	local sp = nil
+	local sp
 	if tostring(sSpecies or "") == self.sAllSpecies then
 		sp = self.sAllSpecies
 	else
@@ -139,20 +135,26 @@ Fetch.Start = function(self, oUI, sReq, sSpecies, sExclude)
 		return answer(false, "notradecentre")
 	end
 	local nRoom = -1
-	local nMax, nNow = call(tAPIs.park, "GetTradeCentreMaxCapacity"), call(tAPIs.park, "GetNumberOfAnimalsInTradeCentre")
-	if type(nMax) == "number" and type(nNow) == "number" then
+	local nMax, nNow, bFull = ParkReads.TradeCentreRoom(tAPIs.park)
+	if bFull then
+		return answer(false, "full", 0)
+	end
+	if nMax ~= nil then
 		nRoom = nMax - nNow
-		if nRoom <= 0 then
-			return answer(false, "full", 0)
-		end
 	end
 	local sMode = Kin:_GameMode(tAPIs)
 	local sZoo = nil
 	pcall(function() sZoo = Kin:_ZooKey(tAPIs, 1e9) end)
+	-- the arrival in a Franchise park refuses a request with no zoo, so one without it would strand silently
+	if sZoo == nil and sMode ~= "offline" then
+		return answer(false, "nozoo", nRoom)
+	end
 	local sEx = cleanExclude(sExclude)
+	if sEx == nil then
+		return answer(false, "toolong", nRoom)
+	end
 	local bOk, sDetail = TJ:_OpenHub("storage", sp, function()
-		self.nSeq = self.nSeq + 1
-		self.tPending = { nSeq = self.nSeq, sSpecies = sp, nRoom = nRoom, sExclude = sEx, nTime = now(), bDelivered = false }
+		Handover.Put(self, { sSpecies = sp, nRoom = nRoom, sExclude = sEx, sZoo = sZoo, bDelivered = false }, now())
 		self.tLastClick = { sZoo = sZoo, sMode = sMode, nTime = now() }
 	end)
 	if not bOk then
@@ -168,16 +170,23 @@ end
 -- The hub page: the request, fresh only once
 -----------------------------------------------------------------------
 Fetch.Hello = function(self, oUI)
-	local t = self.tPending
+	local t, bExpired = Handover.Pending(self, now())
+	if bExpired then
+		mark("fetch_expired")
+	end
 	if t == nil then
 		return
 	end
-	if now() - t.nTime > self.nPendingSeconds then
+	-- Send to Zoo goes to the hub's zoo: never one the game names as other than the click's
+	local Kin = kin()
+	if Kin and Kin:ZoosDiffer(t.sZoo, Kin:WorldZooKey()) then
 		self.tPending = nil
-		mark("fetch_expired")
+		mark("fetch_other_zoo")
+		log("pending", { seq = t.nSeq, otherZoo = true })
 		return
 	end
-	local bFresh = not t.bDelivered
+	-- a first hello long after the click is a later visit, not the click's own
+	local bFresh = not t.bDelivered and now() - t.nTime < self.nFreshSeconds
 	t.bDelivered = true
 	pcall(oUI.TriggerEventAtNextAdvance, oUI, "PZ2QoL_FetchPending", t.nSeq, t.sSpecies, t.nRoom, t.sExclude, bFresh)
 	mark(bFresh and "fetch_pending_fresh" or "fetch_pending_again")
@@ -185,8 +194,7 @@ Fetch.Hello = function(self, oUI)
 end
 
 Fetch.Ack = function(self, nSeq)
-	if self.tPending ~= nil and tonumber(nSeq) == self.tPending.nSeq then
-		self.tPending = nil
+	if Handover.Ack(self, nSeq) then
 		mark("fetch_acked")
 	end
 end
@@ -199,25 +207,11 @@ Fetch.Attach = function(self, oUI)
 		return
 	end
 	self.tViews[oUI] = true
-	local function guard(sName, fn)
-		return function(_, ...)
-			local bOk, sErr = pcall(fn, ...)
-			if not bOk then
-				trace(sName .. " failed: " .. tostring(sErr))
-			end
-		end
-	end
-	local bOk, sErr = pcall(function()
-		oUI:AddEventListener("PZ2QoL_FetchStart", 3, guard("start", function(sReq, sSpecies, sExclude)
-			self:Start(oUI, sReq, sSpecies, sExclude)
-		end), self)
-		oUI:AddEventListener("PZ2QoL_FetchHello", 0, guard("hello", function()
-			self:Hello(oUI)
-		end), self)
-		oUI:AddEventListener("PZ2QoL_FetchAck", 1, guard("ack", function(nSeq)
-			self:Ack(nSeq)
-		end), self)
-	end)
+	local bOk, sErr = Handover.Listen(oUI, self, trace, {
+		{ "PZ2QoL_FetchStart", 3, function(sReq, sSpecies, sExclude) self:Start(oUI, sReq, sSpecies, sExclude) end },
+		{ "PZ2QoL_FetchHello", 0, function() self:Hello(oUI) end },
+		{ "PZ2QoL_FetchAck", 1, function(nSeq) self:Ack(nSeq) end },
+	})
 	if not bOk then
 		trace("listeners failed: " .. tostring(sErr))
 	end

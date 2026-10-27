@@ -29,11 +29,6 @@ const SEVERITY_RANK = { risk: 6, kin: 5, future: 4, held: 3, covered: 2, distant
 export function severityRank(s) {
     return SEVERITY_RANK[s] || 0;
 }
-export function worstSeverity(list) {
-    let worst = null;
-    for (const s of list) if (severityRank(s) > severityRank(worst)) worst = s;
-    return worst;
-}
 
 export const SEVERITY_INFO = {
     risk: { label: 'Inbreeding risk', short: 'Risk', tip: 'The game counts this pair as inbred, and both can breed now.' },
@@ -48,6 +43,13 @@ export const SEVERITY_INFO = {
 // 1/16 = first cousins, great-grandparents, half aunts/uncles.
 export const DEFAULT_CLOSE_KINSHIP = 1 / 16;
 const MAX_GENERATIONS = 8;
+
+// A relation's tier: 'game' (the game's own rule), 'close' (at or over the
+// model's close-kin line) or 'distant'; null when not related.
+export function kinTier(model, rel) {
+    if (!rel) return null;
+    return rel.game ? 'game' : rel.kinship >= model.closeKinship - 1e-9 ? 'close' : 'distant';
+}
 
 function known(g) {
     return g != null && g !== '' && g !== '0' && g !== 0;
@@ -70,6 +72,8 @@ function normalizeBond(b) {
         // away at the vet or in transport
         here: b.here === true,
         lock: asArray(b.lock).map(String),
+        // the animals whose check failed this scan: unknown, held like a lock while the bond is whole
+        unk: asArray(b.unk).map(String),
         mourn: typeof b.mourn === 'number' && isFinite(b.mourn) && b.mourn > 0 ? b.mourn : 0,
     };
 }
@@ -87,8 +91,10 @@ export function normalizeSnapshot(raw) {
         sex: typeof a.sex === 'number' ? a.sex : Sex.Unisex,
         juv: !!a.juv,
         contra: !!a.contra,
-        infertile: !!a.infertile,
+        infertile: !!a.infertile || (typeof a.maturity === 'number' && a.maturity >= 4),
         preg: !!a.preg,
+        // the game's EAnimalMaturity, only on Animal Storage rows (storedFert)
+        maturity: typeof a.maturity === 'number' ? a.maturity : undefined,
         // at the vet, in a quarantine or carried, but assigned to `hab`
         away: a.away ? String(a.away) : '',
         alive: a.alive !== false,
@@ -140,7 +146,7 @@ export function normalizeSnapshot(raw) {
             speciesFacts[sp].maturation = maturation;
         }
     }
-    for (const a of animals) a.fert = fertilityOf(a, speciesFacts[a.species]);
+    for (const a of animals) a.fert = a.maturity != null ? storedFert(a.maturity) : fertilityOf(a, speciesFacts[a.species]);
     const habitats = asArray(snap.habitats).filter(h => h && h.id != null).map(h => ({
         id: String(h.id),
         name: h.name != null ? String(h.name) : '',
@@ -169,6 +175,13 @@ export function normalizeSnapshot(raw) {
         park: snap.park != null ? String(snap.park) : '',
         // 'franchise' | 'offline' (Sandbox, Career, Challenge) | 'unknown'
         mode: snap.mode === 'franchise' || snap.mode === 'offline' ? snap.mode : 'unknown',
+        // the park's sandbox switches: false only when the park turned one off
+        rules: {
+            socialGroups: !(snap.rules && snap.rules.socialGroups === false),
+            overcrowding: !(snap.rules && snap.rules.overcrowding === false),
+        },
+        // a wildlife reserve rather than a zoo
+        reserve: snap.reserve === true,
         tradeCentre: snap.tradeCentre && snap.tradeCentre.id != null ? { id: String(snap.tradeCentre.id), name: String(snap.tradeCentre.name || 'Trade centre') } : null,
     };
 }
@@ -603,6 +616,28 @@ export function offspringScore(pred) {
     return Math.round(vals.reduce((s, v) => s + v, 0) / vals.length * 100);
 }
 
+// A breeder's calves with each of `mates` (gene sets) as one score: a male's
+// average over them (in a harem he fathers every litter,
+// so he has to suit them all), a female's best (she joins the pride whose
+// male suits her); best is its best young. -> { score, best, mates } | null
+export function calfScores(genes, mates, male) {
+    const each = (mates || []).map(m => offspringScore(predictOffspring(genes, m))).filter(v => v != null);
+    if (!each.length) return null;
+    const best = Math.max(...each);
+    const score = male ? Math.round(each.reduce((s, v) => s + v, 0) / each.length) : best;
+    return { score, best, mates: each.length };
+}
+
+// The best calf score `genes` could have with one of `mates` (gene sets). -> 0..100 or null
+export function bestOffspringScore(genes, mates) {
+    let best = null;
+    for (const m of mates || []) {
+        const s = offspringScore(predictOffspring(genes, m));
+        if (s != null && (best == null || s > best)) best = s;
+    }
+    return best;
+}
+
 // ---------------------------------------------------------------- model
 
 function compatibleSexes(a, b) {
@@ -658,7 +693,8 @@ export function coverReason(x, y) {
 
 // The game's own monogamy rule (CompareMatesPopup: "IconLock" either way
 // means no conception): x and y are held apart when one of them is locked
-// against the other in this scan AND its bonded mate is alive, in the model
+// against the other in this scan (or the check failed: unknown, as the
+// alerts read it) AND its bonded mate is alive, in the model
 // and in the same habitat (not the other one). A dead or absent mate (the
 // bond is broken, the animal mourns) does not hold: the lock may lift at any
 // time, so the pair is warned about as before. Moves in a plan clear the
@@ -666,7 +702,7 @@ export function coverReason(x, y) {
 export function bondHold(animals, x, y) {
     for (const [self, other] of [[x, y], [y, x]]) {
         const b = self.bond;
-        if (!b || !b.lock.includes(other.id)) continue;
+        if (!b || !(b.lock.includes(other.id) || b.unk.includes(other.id))) continue;
         const mate = animals.get(b.mate);
         if (!bondIntact(self, mate) || mate.id === other.id) continue;
         // an elderly or too old mate: the bond will likely end with its life
@@ -705,6 +741,12 @@ function pairKeyOf(x, y) {
 function ordered(x, y) {
     if (x.sex === Sex.Female && y.sex !== Sex.Female) return [y, x];
     return [x, y];
+}
+
+// The park counts overcrowding (false only when its sandbox switch is off:
+// then a habitat holds any number of adults).
+export function overcrowdingOn(model) {
+    return !model || !model.rules || model.rules.overcrowding !== false;
 }
 
 // Shoals (boids) and colonies, by the game's own species checks.
@@ -762,7 +804,7 @@ export function buildKinModel(raw, opts = {}) {
                     const [m, f] = ordered(x, y);
                     const rel = ped.relation(m.guid, f.guid);
                     if (!rel) continue;
-                    const tier = rel.game ? 'game' : rel.kinship >= closeKinship - 1e-9 ? 'close' : 'distant';
+                    const tier = kinTier({ closeKinship }, rel);
                     const relMF = rel;
                     const base = pairSeverity(m, f, tier);
                     const held = useBonds && (base === 'risk' || base === 'kin') ? bondHold(animals, m, f) : null;
@@ -803,6 +845,8 @@ export function buildKinModel(raw, opts = {}) {
         snapshot: snap,
         park: snap.park,
         mode: snap.mode,
+        rules: snap.rules || { socialGroups: true, overcrowding: true },
+        reserve: snap.reserve,
         tradeCentre: snap.tradeCentre,
         speciesFacts: snap.speciesFacts || {},
         ped,
@@ -1073,13 +1117,14 @@ export function mateCandidates(model, id, { includeJuveniles = false, stored = n
         const rel = self.guid && other.guid ? view.ped.relation(self.guid, other.guid) : null;
         const kinship = rel ? rel.kinship : 0;
         const game = rel ? rel.game : false;
+        const tier = kinTier(model, rel);
         const pred = predictOffspring(self.genes, other.genes);
         out.push({
             animal: other,
             rel,
             kinship,
             game,
-            tier: game ? 'game' : kinship >= model.closeKinship - 1e-9 ? 'close' : kinship > 0 ? 'distant' : 'none',
+            tier: !tier || (tier === 'distant' && !(kinship > 0)) ? 'none' : tier,
             pred,
             score: offspringScore(pred),
             sameHabitat: !!self.hab && self.hab === other.hab,
@@ -1171,23 +1216,6 @@ export function riskHabitatsExcluding(model, muted) {
 
 // ------------------------------------------------------- storage (hub)
 
-// Storage animals are not in habitats; every related pair among them is
-// reported (both sexes), for the "related to selection" filter.
-export function relatedAmong(model, ids) {
-    const list = ids.map(id => model.animals.get(String(id))).filter(a => a && a.guid);
-    const out = [];
-    for (let i = 0; i < list.length; i++) {
-        for (let j = i + 1; j < list.length; j++) {
-            const rel = model.ped.relation(list[i].guid, list[j].guid);
-            if (!rel) continue;
-            const tier = rel.game ? 'game' : rel.kinship >= model.closeKinship - 1e-9 ? 'close' : 'distant';
-            if (tier === 'distant') continue;
-            out.push({ a: list[i], b: list[j], rel, tier, kinship: rel.kinship, breeding: compatibleSexes(list[i], list[j]) });
-        }
-    }
-    return out.sort((p, q) => (q.tier === 'game') - (p.tier === 'game') || q.kinship - p.kinship);
-}
-
 // All relatives of one animal among the given set.
 export function relativesOf(model, id, pool) {
     const self = model && model.animals.get(String(id));
@@ -1197,8 +1225,7 @@ export function relativesOf(model, id, pool) {
         if (other === self || !other.guid) continue;
         const rel = model.ped.relation(self.guid, other.guid);
         if (!rel) continue;
-        const tier = rel.game ? 'game' : rel.kinship >= model.closeKinship - 1e-9 ? 'close' : 'distant';
-        out.push({ animal: other, rel, tier, kinship: rel.kinship });
+        out.push({ animal: other, rel, tier: kinTier(model, rel), kinship: rel.kinship });
     }
     return out.sort((p, q) => (q.tier === 'game') - (p.tier === 'game') || q.kinship - p.kinship);
 }

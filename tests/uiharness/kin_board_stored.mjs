@@ -12,7 +12,7 @@
 // per open (Rescan asks again), the "N more" cap with 10 adults, the offline
 // note, the Storage shortcut (one PZ2QoL_TradeOpen, the board closes), and
 // the layout within 1920x1080.
-import { seedZooKin } from './kin_fixture.mjs';
+import { seedZooKin, settleStoredAsks } from './kin_fixture.mjs';
 import { layoutFacts, layoutProblems } from './kin_board.mjs';
 
 export const name = 'board_stored';
@@ -130,7 +130,10 @@ export async function hud(page, ctx) {
             engine.trigger('PZ2QoL_TradeOpenResult', reqId, true, '');
         });
     }, { fatherGuid: 'g' + father.rowId });
+    await settleStoredAsks(page, 'Lion');
     const kbs = () => page.evaluate(() => JSON.parse(JSON.stringify(window.__kbs)));
+    // the board's asks: the Market's fresh-blood check (marketmates.js) asks about the zoo's other species too
+    const lionAsks = async () => (await kbs()).asks.filter(sp => sp === 'Lion');
 
     try {
         // 1. open on Lion: 1 in-park card, then 4 stored cards (Zawadi's record skipped)
@@ -157,8 +160,8 @@ export async function hud(page, ctx) {
             if (f.stored.some(s => !/in storage/.test(s.text))) problems.push('a stored card lacks the "in storage" tag');
             if (f.stored[0] && !/Sasha/.test(f.stored[0].text)) problems.push('stored cards are not worst first');
         }
-        facts.asksOpen = (await kbs()).asks;
-        if (facts.asksOpen.join() !== 'Lion') problems.push(`stored adults asked ${JSON.stringify(facts.asksOpen)} on open, expected once for Lion`);
+        facts.asksOpen = await lionAsks();
+        if (facts.asksOpen.length !== 1) problems.push(`stored adults asked ${JSON.stringify(facts.asksOpen)} on open, expected once for Lion`);
         await ctx.shot(page, 'kbs_1_trade_stored');
         facts.layout = await layoutFacts(page);
         layoutProblems('stored', facts.layout, problems);
@@ -201,13 +204,13 @@ export async function hud(page, ctx) {
             kin.applyKinSnapshot(JSON.parse(JSON.stringify(window.__kbsSnap)));
         });
         await page.waitForTimeout(400);
-        facts.asksAfterScan = (await kbs()).asks.length;
+        facts.asksAfterScan = (await lionAsks()).length;
         if (facts.asksAfterScan !== 1) problems.push(`a park scan asked for stored adults again (${facts.asksAfterScan} asks)`);
         await page.evaluate(() => { window.__kbs.mode = 'ten'; });
         await click(page.locator('.PZ2QoL_kb .PZ2QoL_kpHead .PZ2QoL_kpBtn', { hasText: 'Rescan' }));
         await page.waitForFunction(() => document.querySelectorAll('.PZ2QoL_kb .PZ2QoL_kbPinned .PZ2QoL_kbCard.stored').length === 6, null, { timeout: 4000 }).catch(() => {});
         await page.waitForTimeout(300);
-        facts.asksAfterRescan = (await kbs()).asks.length;
+        facts.asksAfterRescan = (await lionAsks()).length;
         facts.ten = await pinnedFacts(page);
         if (facts.asksAfterRescan !== 2) problems.push(`Rescan: ${facts.asksAfterRescan} asks, expected 2`);
         if (!facts.ten || facts.ten.stored.length !== 6 || !/4 more/.test(facts.ten.more)) problems.push(`10 stored: ${facts.ten && facts.ten.stored.length} cards, more "${facts.ten && facts.ten.more}" (expected 6 and "4 more")`);
@@ -232,7 +235,7 @@ export async function hud(page, ctx) {
         await page.waitForTimeout(200);
 
         // 5. an offline park: no stored cards, the faint note, nothing asked
-        const before = (await kbs()).asks.length;
+        const before = (await lionAsks()).length;
         await page.evaluate(async () => {
             const kin = await import('/js/mods/pz2qol/kin.js');
             const snap = JSON.parse(JSON.stringify(window.__kbsSnap));
@@ -242,7 +245,7 @@ export async function hud(page, ctx) {
         });
         await page.waitForTimeout(400);
         facts.offline = await pinnedFacts(page);
-        facts.offlineAsks = (await kbs()).asks.length - before;
+        facts.offlineAsks = (await lionAsks()).length - before;
         if (!facts.offline || facts.offline.stored.length || !/Franchise/.test(facts.offline.note) || facts.offlineAsks) problems.push(`offline: ${JSON.stringify(facts.offline)}, ${facts.offlineAsks} asks`);
         if (facts.offline && facts.offline.counts.includes('storage')) problems.push(`offline head still counts storage: "${facts.offline.counts}"`);
 

@@ -7,7 +7,7 @@
 // wheel), so these scroll areas do the same, with their own thumbs.
 import { SEVERITY_INFO } from '/js/mods/pz2qol/kincore.js';
 import { COUNTED, countWord } from '/js/mods/pz2qol/kinplannercore.js';
-import { h, icon, setClass } from '/js/mods/pz2qol/ui.js';
+import { crossMark, h, icon, remPx, setClass } from '/js/mods/pz2qol/ui.js';
 import { reportError } from '/js/mods/pz2qol/errors.js';
 
 // ------------------------------------------------------------- registry
@@ -52,13 +52,14 @@ export function makeGuard(prefix) {
     };
 }
 
-export function remPx() {
-    try {
-        return parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
-    }
-    catch (e) {
-        return 16;
-    }
+export { remPx };
+
+// A data age in words: 'just now', '12 s ago', '3 min ago'.
+export function ago(ms) {
+    const s = Math.round(ms / 1000);
+    if (s < 5) return 'just now';
+    if (s < 60) return `${s} s ago`;
+    return `${Math.round(s / 60)} min ago`;
 }
 
 export function trunc(text, n) {
@@ -105,10 +106,10 @@ export function switchEl(guard, label, on, onClick, title) {
         h('div.PZ2QoL_kpSwitchLabel', { text: label }));
 }
 
-// A close cross drawn with CSS (no glyph or icon needed).
+// A round close button.
 export function closeButton(guard, title, onClick, small = false) {
     return h(`div.PZ2QoL_kpClose${small ? '.small' : ''}`, { title, onClick: guard('Close', onClick) },
-        h('div.PZ2QoL_kpCloseX.a'), h('div.PZ2QoL_kpCloseX.b'));
+        crossMark());
 }
 
 export function countPills(counts, { compact = false } = {}) {

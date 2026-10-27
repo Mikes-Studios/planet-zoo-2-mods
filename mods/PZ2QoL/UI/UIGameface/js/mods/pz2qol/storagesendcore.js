@@ -1,5 +1,5 @@
 // "Find a habitat" (Animal Storage -> zoo): the pure parts, no DOM and no
-// engine, so node tests can run them (tests/storagesend.test.mjs).
+// engine, so node tests can run them (tests/storagesend.test.js).
 //
 // What happens in game (storagesend.js, pz2qol.storagesend.lua):
 //  1. Animal Storage: one click sends the selection to the zoo with the
@@ -11,6 +11,7 @@
 //     sends the game's own Move for that one animal, waits until the game
 //     confirms it (a keeper has the transport job), pauses, then the next.
 //     A failure is skipped and the run carries on; only Stop ends it.
+import { SKIP_TEXT, skipText } from './storagefetchcore.js';
 
 // Why a habitat was chosen, best first.
 export const TIER = Object.freeze({ own: 0, parent: 1, species: 2, any: 3 });
@@ -42,13 +43,10 @@ export function parseIdList(s) {
 }
 
 // Why the button can't start a run now ('' when it can).
-//  franchise:   the hub is in Franchise mode
-//  allowOnline: the player's "Allow in Franchise" switch (off by default)
-export function blockedReason({ count = 0, sendAllowed = true, franchise = false, allowOnline = false, moving = false } = {}) {
+export function blockedReason({ count = 0, sendAllowed = true, moving = false } = {}) {
     if (!count) return 'Select the animals first (tick them, or use select all).';
     if (moving) return 'The game is already sending these animals.';
     if (!sendAllowed) return "The game can't send this selection to the zoo right now.";
-    if (franchise && !allowOnline) return 'In a Franchise zoo, placing animals one by one is off until you allow it below.';
     return '';
 }
 
@@ -79,11 +77,11 @@ export function rankHabitats(facts) {
 
 // Why an animal is not sent anywhere ('' when it can be).
 export function skipReason(facts) {
-    if (!facts) return 'the game did not answer';
-    if (facts.error) return facts.error === 'nopark' ? 'no park is running' : String(facts.error);
-    if (facts.gone) return 'no longer in the zoo';
-    if (facts.alive === false) return 'no longer alive';
-    if (facts.moving) return 'already on its way somewhere';
+    if (!facts) return SKIP_TEXT.noanswer;
+    if (facts.error) return skipText(facts.error);
+    if (facts.gone) return SKIP_TEXT.gone;
+    if (facts.alive === false) return SKIP_TEXT.dead;
+    if (facts.moving) return SKIP_TEXT.moving;
     if (facts.lt === 'habitat' && facts.assigned) return 'already in a habitat';
     const habs = Array.isArray(facts.habitats) ? facts.habitats : [];
     if (!habs.length) return 'this zoo has no finished habitat';
@@ -138,6 +136,7 @@ export function summaryText(s) {
 
 // The run. deps:
 //   facts(id)            -> Promise<facts|null>  (the game's facts for one animal)
+//   status(id)           -> the same without habitats, for the polls (default: facts)
 //   move(id, habId)      -> Promise<{ ok, detail }> (ONE move, the game's own)
 //   sleep(ms)            -> Promise (should end early on Stop)
 //   paceMs()             -> pause after each move (the player's 'moves' pace)
@@ -147,6 +146,7 @@ export function summaryText(s) {
 // Returns the final state.
 export async function runPlacement(ids, deps) {
     const d = Object.assign({ online: false, isStopped: () => false, onUpdate: () => {}, paceMs: () => 1500, now: () => Date.now() }, deps);
+    const status = d.status || d.facts;
     const state = { running: true, total: ids.length, index: 0, current: null, log: [], finished: false, stopped: false };
     const update = patch => {
         Object.assign(state, patch);
@@ -178,14 +178,18 @@ export async function runPlacement(ids, deps) {
         }
         // the game is still busy with a server request: wait for it first
         const busySince = d.now();
+        let waited = false;
         while (f && f.busy && d.now() - busySince < BUSY_WAIT_MS && !d.isStopped()) {
             await d.sleep(BUSY_POLL_MS);
-            f = await d.facts(id);
+            f = await status(id);
+            waited = true;
         }
         if (d.isStopped()) {
             state.stopped = true;
             break;
         }
+        // the habitats may have changed while the game was busy
+        if (waited) f = await d.facts(id);
         pick = pickHabitat(f);
         if (!pick.hab) {
             skip(id, f, pick.reason);
@@ -210,16 +214,22 @@ export async function runPlacement(ids, deps) {
         // wait for the game to confirm (a keeper has the job, or it is there)
         const since = d.now();
         let ok = false;
-        while (d.now() - since < CONFIRM_TIMEOUT_MS) {
-            const now = await d.facts(id);
-            if (moveConfirmed(now, hab.id)) {
+        for (;;) {
+            if (moveConfirmed(await status(id), hab.id)) {
                 ok = true;
                 break;
             }
+            // after Stop the sleep returns at once: one last look, then out
+            if (d.isStopped() || d.now() - since >= CONFIRM_TIMEOUT_MS) break;
             await d.sleep(CONFIRM_POLL_MS);
         }
+        if (!ok && d.isStopped()) {
+            skip(id, f, SKIP_TEXT.stopped);
+            update({});
+            break;
+        }
         if (!ok) {
-            skip(id, f, 'not confirmed by the game in time');
+            skip(id, f, SKIP_TEXT.unconfirmed);
             update({});
             await d.sleep(d.online ? Math.max(ERROR_PAUSE_MS, d.paceMs()) : d.paceMs());
             continue;

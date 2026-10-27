@@ -434,36 +434,6 @@ fireUI(oPage, "PZ2QoL_MarketPeek", 44)
 frames(1400) -- ~22 s
 check(peekStates() == "loading,failed" and calls("Display")[2] and calls("Display")[2].tArgs[1] == 0, "timeout restores: " .. peekStates())
 
--- the lister asks whether the game still waits on a franchise request
-local function dbStates()
-	local t = {}
-	for _, c in ipairs(calls("Trigger")) do
-		if c.tArgs[1] == "PZ2QoL_DbState" then
-			t[#t + 1] = tostring(c.tArgs[2]) .. "/" .. tostring(c.tArgs[3]) .. "/" .. tostring(c.tArgs[4])
-		end
-	end
-	return table.concat(t, ",")
-end
-check(oPage.tListeners["PZ2QoL_DbQuery"] ~= nil, "server state listener on the hub page")
-local bDbBusy = true
-oStorage.tWorldAPIs = { franchise = { IsDatabaseOperationInProgress = function(self) return bDbBusy, 42 end } }
-tCalls = {}
-fireUI(oPage, "PZ2QoL_DbQuery")
-check(dbStates() == "true/true/42", "busy while a request runs: " .. dbStates())
-bDbBusy = false
-tCalls = {}
-fireUI(oPage, "PZ2QoL_DbQuery")
-check(dbStates() == "true/false/42", "idle: " .. dbStates())
-oStorage.tWorldAPIs = { franchise = { IsDatabaseOperationInProgress = function() error("gone") end } }
-tCalls = {}
-fireUI(oPage, "PZ2QoL_DbQuery")
-check(dbStates() == "false/false/-1", "unknown when the call fails: " .. dbStates())
-oStorage:TransitionOut()
-tCalls = {}
-fireUI(oPage, "PZ2QoL_DbQuery")
-check(dbStates() == "false/false/-1", "unknown outside storage: " .. dbStates())
-oStorage:TransitionIn()
-oStorage.tWorldAPIs = nil
 
 -----------------------------------------------------------------------
 -- 10. Relatedness data for the page (PZ2QoL.Kin)
@@ -565,6 +535,8 @@ local animalsAPI = {
 	end,
 	GetGenes = function(self, e) return { tFertility = genes("A", "B"), tImmunity = genes("C", "C"), tSize = genes("A", "D"), tLongevity = genes("B", "B") } end,
 	GetMateData = function(self, e) if e == 2 then return { bIsBeta = false, tMateData = { { nID = 3, sName = "Zoe" } } } end return nil end,
+	-- the game's move block: an adult by age group counts as young until it lifts
+	GetRelocatePreventers = function(self, e) return { bJuvenile = false } end,
 	GetUIAnimalListDataForIDs = function(self, tIDs)
 		record("ListData", #tIDs)
 		if #tIDs > 1 then
@@ -820,12 +792,12 @@ check(#calls("Contracept") == 1 and calls("Contracept")[1].tArgs[1] == 3 and cal
 check(#calls("ExhibitContracept") == 1 and calls("ExhibitContracept")[1].tArgs[1] == 78, "exhibit animals too")
 check(kinStates() == "contracept,contracept", "page told: " .. kinStates())
 -- an exhibit UID that is a GUID (Franchise, 3.2.0 player log): the game gets back the value it gave
-check(Kin.tExhibitUids["x78"] == 78, "the scan keeps each exhibit animal's UID")
+check(Kin.tStatic["x78"] and Kin.tStatic["x78"].uid == 78, "the scan keeps each exhibit animal's UID")
 -- a table stands in for a native GUID value
-Kin.tExhibitUids["x01a1583f-37da-76dd-b9aa-ea664ebd5888"] = { guid = "01a1583f-37da-76dd-b9aa-ea664ebd5888" }
+Kin.tStatic["x01a1583f-37da-76dd-b9aa-ea664ebd5888"] = { sGuid = "x01a1583f-37da-76dd-b9aa-ea664ebd5888", tPar = {}, uid = { guid = "01a1583f-37da-76dd-b9aa-ea664ebd5888" } }
 tCalls = {}
 fireUI(oHUD, "PZ2QoL_KinContracept", "x01a1583f-37da-76dd-b9aa-ea664ebd5888", true)
-check(#calls("ExhibitContracept") == 1 and rawequal(calls("ExhibitContracept")[1].tArgs[1], Kin.tExhibitUids["x01a1583f-37da-76dd-b9aa-ea664ebd5888"]) and kinStates() == "contracept", "a GUID exhibit UID: contraception set, " .. kinStates())
+check(#calls("ExhibitContracept") == 1 and rawequal(calls("ExhibitContracept")[1].tArgs[1], Kin.tStatic["x01a1583f-37da-76dd-b9aa-ea664ebd5888"].uid) and kinStates() == "contracept", "a GUID exhibit UID: contraception set, " .. kinStates())
 tCalls = {}
 fireUI(oHUD, "PZ2QoL_KinContracept", "x01a1583f-0000", true)
 check(#calls("ExhibitContracept") == 0 and kinStates() == "failed", "an exhibit id the scan never saw: refused, nothing sent")
@@ -1265,6 +1237,8 @@ tParkAPIs.wildterritory = {
 }
 animalsAPI.GetSpeciesSocialityData = function(self, sp) return { tGroup = { nMaxMales = 1, nMaxFemales = 5 } } end
 tCalls = {}
+-- the log's welfare curve is asked once a species a session: taken as logged, so only the table is counted
+Kin.tWelfareLogged.Lion = true
 fireUI(oHUD, "PZ2QoL_KinSpecies", "s1", "Lion", "101,102")
 local tSpCall = calls("Trigger")[1]
 check(tSpCall and tSpCall.tArgs[1] == "PZ2QoL_KinSpeciesResult" and tSpCall.tArgs[2] == "s1", "species facts answered with the request id")
@@ -1774,7 +1748,7 @@ local bW, sW = PlayerStore:Write("o_x_e", '{"a":2}', nClock)
 check(sR == "" and bW == false and sW == "failed", "failing player calls: read empty, write refused")
 tPlayerObj.GetData = function(self, ...) return findData(self.tData, ...) end
 tPlayerObj.SetData = function(self, v, ...) applyData(v, self.tData, ...) end
-PlayerStore:Forget()
+PlayerStore.nDirtySince, PlayerStore.nDirtyLast = nil, nil -- nothing left unsaved
 
 -- the player-wide settings (prefs.js): tData.PZ2QoL.Prefs, one set across
 -- zoos, a separate area from Assign (in a do-block: the main chunk is at
@@ -1799,7 +1773,7 @@ do
 	-- round trip
 	tMarks = {}
 	local sP = '{"progOpt":{"engine":"deep","preset":"standard","cpu":"normal"}}'
-	PlayerStore:Forget()
+	PlayerStore.nDirtySince, PlayerStore.nDirtyLast = nil, nil -- nothing left unsaved
 	check(PlayerStore:WritePrefs(sP, nClock) == true and marked("prefs_written"), "prefs: written (prefs_written)")
 	local tP = prefs()
 	check(type(tP) == "table" and tP.N == "1" and tP.P1 == sP and tP.S == "1", "prefs: stored as { S, N, P1 }")
@@ -1893,7 +1867,7 @@ do
 	check(prefsSave("Q6", '{"c":3}') == false, "prefs event: failing player calls, the save answered false")
 	tPlayerObj.GetData = function(self, ...) return findData(self.tData, ...) end
 	tPlayerObj.SetData = function(self, v, ...) applyData(v, self.tData, ...) end
-	PlayerStore:Forget()
+	PlayerStore.nDirtySince, PlayerStore.nDirtyLast = nil, nil -- nothing left unsaved
 	Core.Mark = fnMark
 end
 
@@ -2135,7 +2109,7 @@ Autosave.nElapsed = 5000
 frames(120)
 check(tAsCalls.request == 4, "off: no autosave requests")
 fireUI(oAsView, "PZ2QoL_AutosaveNow")
-check(tAsCalls.request == 5 and Autosave.bPendingManual, "Save now asks the game at once")
+check(tAsCalls.request == 5 and Autosave.nPendingSince ~= nil, "Save now asks the game at once")
 oMgr2:OnAutosaveComplete({})
 
 -- state for the page
@@ -2227,20 +2201,6 @@ do (function()
 	tG, sG = gate("g2")
 	check(tG.park == true and tG.gameMode == "offline" and tG.move == true and tG.dbBusy == false, "gate: offline park (" .. sG .. ")")
 	check(tG.tcMax == 20 and tG.tcCount == 3, "gate: trade centre capacity and count")
-	check(tG.hubTypeKnown == true and tG.franchiseZoo == nil, "gate: hub type known; no zoo GUID call, no franchiseZoo (" .. sG .. ")")
-	local zooGuid17 = nil
-	tGateWorld.franchise.GetCurrentZooGUID = function() return zooGuid17 end
-	tG, sG = gate("g2b")
-	check(tG.franchiseZoo == false, "gate: no Franchise zoo GUID, franchiseZoo false (" .. sG .. ")")
-	zooGuid17 = "1234"
-	tG = gate("g2c")
-	check(tG.franchiseZoo == true, "gate: a Franchise zoo GUID, franchiseZoo true")
-	zooGuid17 = nil
-	local konst17 = tGateWorld.franchise.PlanetHubType_FranchiseOnline
-	tGateWorld.franchise.PlanetHubType_FranchiseOnline = nil
-	tG = gate("g2d")
-	check(tG.hubTypeKnown == false, "gate: no Franchise hub-type constant, hub type not known")
-	tGateWorld.franchise.PlanetHubType_FranchiseOnline = konst17
 	-- the park calendar: the real date and the month's length; an invalid
 	-- date or a throwing call leaves the fields out
 	check(tG.year == nil and tG.month == nil and tG.monthSec == nil, "gate: no calendar calls, no calendar fields")

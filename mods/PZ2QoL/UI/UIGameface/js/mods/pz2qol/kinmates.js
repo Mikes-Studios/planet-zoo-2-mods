@@ -22,8 +22,9 @@
 // Everything is VNodes added to the game's own renders (kinhooks.js), so it
 // survives re-renders; every patch turns itself off after repeated errors.
 import { getKinModel, getKinSettings, getStorageKinModel, markKinActive, onKin } from '/js/mods/pz2qol/kin.js';
-import { explainRelation, holdReason, partnerOf, percent, relationWord, Sex, SEVERITY_INFO } from '/js/mods/pz2qol/kincore.js';
-import { animalCardContent, offspringBlock, placeOf, riskSummaryText, sexClass, sexSymbol, visiblePairs, worstOfCounts } from '/js/mods/pz2qol/kinui.js';
+import { explainRelation, holdReason, kinTier, partnerOf, percent, relationWord, Sex, SEVERITY_INFO } from '/js/mods/pz2qol/kincore.js';
+import { animalCardContent, offspringBlock, placeOf, riskSummaryText, sexClass, sexSymbol, visiblePairs } from '/js/mods/pz2qol/kinui.js';
+import { worstOf } from '/js/mods/pz2qol/kinplannercore.js';
 import {
     appendVNode, badgeVNode, cardHandlers, dsValue, findByClass, gameModule, h, hasClass, isFrontendPage, isHudPage,
     KinSlot, lineVNode, patchRender, unwrap, unwrapUntil,
@@ -145,12 +146,6 @@ function findInModel(model, ref) {
     return null;   // market listings and exchange animals have no lineage
 }
 
-export function tierOf(model, rel) {
-    if (!rel) return null;
-    if (rel.game) return 'game';
-    return rel.kinship >= model.closeKinship - 1e-9 ? 'close' : 'distant';
-}
-
 const TIER_SEVERITY = { game: 'risk', close: 'kin', distant: 'distant' };
 
 // Symmetric relations read "X and Y are half-siblings"; the others name
@@ -237,7 +232,7 @@ function matePair(selId, candId) {
         if (!a || !b) continue;
         if (!a.guid || !b.guid) return { model, a, b, rel: null, unknown: true };
         const rel = model.ped.relation(a.guid, b.guid);
-        const tier = tierOf(model, rel);
+        const tier = kinTier(model, rel);
         // the same two in one habitat, kept apart by a pair bond: say so, as
         // the game's own monogamy lock in this popup does
         const same = (model.byAnimal.get(a.id) || []).find(q => partnerOf(q, a.id) === b);
@@ -463,7 +458,7 @@ function genealogySummary(model) {
     if (!pairs.length) return null;
     const counts = { risk: 0, kin: 0, future: 0, held: 0, covered: 0 };
     for (const p of pairs) if (counts[p.severity] != null) counts[p.severity]++;
-    const worst = worstOfCounts(counts);
+    const worst = worstOf(counts);
     if (!worst) return null;
     const place = placeOf(model, focus);
     const text = `${riskSummaryText(counts)}${place ? ' in ' + place : ''}`;

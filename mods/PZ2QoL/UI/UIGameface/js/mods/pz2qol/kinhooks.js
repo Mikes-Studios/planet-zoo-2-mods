@@ -133,6 +133,23 @@ export function findByClass(v, cls) {
 }
 
 // Appends at the end (never pushes onto Preact's shared empty array).
+// child right after ref, in ref's parent under root: a row of its own below
+// a row of the game's (a line inside it would push the game's items out)
+export function insertAfterVNode(root, ref, child) {
+    const parent = findVNode(root, n => childList(n).includes(ref));
+    if (!parent || !child) return false;
+    // in place, in whichever (nested) children array holds ref: text and empty slots stay
+    const insertIn = arr => {
+        const i = arr.indexOf(ref);
+        if (i >= 0) {
+            arr.splice(i + 1, 0, child);
+            return true;
+        }
+        return arr.some(c => Array.isArray(c) && insertIn(c));
+    };
+    return Array.isArray(parent.children) && insertIn(parent.children);
+}
+
 export function appendVNode(parent, child) {
     if (!parent || !child) return false;
     const kids = parent.children;

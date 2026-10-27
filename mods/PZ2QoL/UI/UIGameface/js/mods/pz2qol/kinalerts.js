@@ -10,21 +10,27 @@
 // to the log only (getLifeLog); births never pop up.
 // Display only; the buttons do what the game's own controls do, one click
 // one action.
-import { getKinAlertFilter, getKinSettings, onKin, setContraception } from '/js/mods/pz2qol/kin.js';
+import { getKinAlertFilter, getKinModel, getKinSettings, locateAnimal, onKin, setContraception } from '/js/mods/pz2qol/kin.js';
 import { newRisks, relationWord, SEVERITY_INFO, Sex, habitatsAtRisk, countsExcluding, riskHabitatsExcluding } from '/js/mods/pz2qol/kincore.js';
 import { sexSymbol, placeOf } from '/js/mods/pz2qol/kinui.js';
 import { openKinPlanner } from '/js/mods/pz2qol/kinplanner.js';
 import { isHudPage } from '/js/mods/pz2qol/kinhooks.js';
-import { h, icon, setClass } from '/js/mods/pz2qol/ui.js';
+import { h, icon, isGamePopupOpen, setClass } from '/js/mods/pz2qol/ui.js';
 import { breadcrumb, reportError } from '/js/mods/pz2qol/errors.js';
+import { dlog } from '/js/mods/pz2qol/debuglog.js';
+import { runPlan } from '/js/mods/pz2qol/kinmoves.js';
+import { TRADE, canMove } from '/js/mods/pz2qol/kinboardcore.js';
 import { mutedSpecies, setMuted } from '/js/mods/pz2qol/kinmute.js';
 import { speciesName } from '/js/mods/pz2qol/speciesnames.js';
 import { LEVELS, ageRate, createLifeState, describeEvent, lifeEvents, stableRate, DEFAULT_HORIZON } from '/js/mods/pz2qol/kinlife.js';
+import { elderlyWarningText, nearingElderly } from '/js/mods/pz2qol/kinageing.js';
+import { missed } from '/js/mods/pz2qol/missednotices.js';
 
 const MAX_TOASTS = 3;
-const TOAST_MS = 25000;
 
 let root = null;
+// the toast columns that hide while a game popup is open (installKinAlerts)
+const toastRoots = new Set();
 let previous = null;
 let summaryShown = false;
 // pair key -> last time it was a (watched) risk. A pair that drops out of
@@ -44,10 +50,16 @@ function remember(pairs, now) {
     }
 }
 
+// A toast column of another module that also stays out of the popups' way.
+export function hideUnderGamePopups(node) {
+    toastRoots.add(node);
+}
+
 function ensureRoot() {
     if (!root) {
         root = h('div.PZ2QoL_kinToasts');
         document.body.appendChild(root);
+        hideUnderGamePopups(root);
     }
     return root;
 }
@@ -56,21 +68,32 @@ function ensureRoot() {
 // 'heads' (Heads-up, 25 s); kinlife.js LEVELS
 // onClose: called once when the toast goes (closed, timed out or pushed
 // out by newer ones). The node gets update(title, text) and keep() (start
-// its timer again) for the per-habitat risk toasts.
+// its timer again) for the per-habitat risk toasts. One that went by
+// itself (timed out, pushed out) waits among the missed notices.
 function toast({ severity, level = 'heads', title, text, actions, onClose = null }) {
+    dlog('notice', 'show', { level, title, text: String(text || '').slice(0, 300) });
     ensureRoot();
+    // told again (Run now): the new one takes the old one's place, here and among the missed
+    missed.drop(title);
+    for (const old of Array.from(root.childNodes)) {
+        if (old._title !== title) continue;
+        root.removeChild(old);
+        if (old._gone) old._gone('replaced');
+    }
     while (root.childNodes.length >= MAX_TOASTS) {
         const old = root.firstChild;
         root.removeChild(old);
-        if (old._gone) old._gone();
+        if (old._gone) old._gone('pushed');
     }
-    const ms = (LEVELS[level] && LEVELS[level].toastMs) || TOAST_MS;
+    const own = actions || [];
+    const ms = (LEVELS[level] && LEVELS[level].toastMs) || LEVELS.heads.toastMs;
     if (level === 'action') actions = (actions || []).concat([{ label: 'Dismiss', run: () => {} }]);
     let timer = null;
     let gone = false;
-    const done = () => {
+    const done = why => {
         if (gone) return;
         gone = true;
+        if (why === 'timeout' || why === 'pushed') missed.add({ title: node._title, text: textEl.textContent, level, severity, actions: own });
         if (onClose) {
             try {
                 onClose();
@@ -80,10 +103,10 @@ function toast({ severity, level = 'heads', title, text, actions, onClose = null
             }
         }
     };
-    const close = () => {
+    const close = (why = 'player') => {
         clearTimeout(timer);
         setClass(node, 'leaving', true);
-        done();
+        done(why);
         setTimeout(() => node.parentNode && node.parentNode.removeChild(node), 250);
     };
     const buttons = (actions || []).map(a => h(`div.PZ2QoL_kinAction${a.primary ? '.primary' : ''}`, {
@@ -104,31 +127,34 @@ function toast({ severity, level = 'heads', title, text, actions, onClose = null
         h('div.PZ2QoL_kinToastBody', null,
             LEVELS[level] && level !== 'info' ? h('div.PZ2QoL_kinToastKicker', { text: LEVELS[level].label }) : null,
             h('div.PZ2QoL_kinToastHead', null, h('div.PZ2QoL_kinCardIcon'), titleEl,
-                h('div.PZ2QoL_kinToastClose', { text: '✕', title: 'Dismiss', onClick: close })),
+                h('div.PZ2QoL_kinToastClose', { title: 'Dismiss', onClick: () => close() }, icon('Icon_Close', 'brown', 'sm'))),
             textEl,
             buttons.length ? h('div.PZ2QoL_kinActions', null, buttons) : null));
     node._gone = done;
+    node._title = title;
     node.update = (t, x) => {
+        node._title = t;
         titleEl.textContent = t;
         textEl.textContent = x;
     };
+    const timeout = () => close('timeout');
     node.keep = () => {
         clearTimeout(timer);
-        timer = setTimeout(close, ms);
+        timer = setTimeout(timeout, ms);
     };
     node.addEventListener('mouseenter', () => clearTimeout(timer));
     node.addEventListener('mouseleave', () => {
         clearTimeout(timer);
-        timer = setTimeout(close, ms / 2);
+        timer = setTimeout(timeout, ms / 2);
     });
-    timer = setTimeout(close, ms);
+    timer = setTimeout(timeout, ms);
     root.appendChild(node);
     breadcrumb('kin_alert');
     return node;
 }
 
 function pairText(model, p) {
-    const word = relationWord(model.ped.relation(p.a.guid, p.b.guid), p.b.sex);
+    const word = relationWord(p.rel, p.b.sex);
     const place = placeOf(model, p.a) || 'A habitat';
     return `${place}: ${p.b.name} ${sexSymbol(p.b.sex)} is ${p.a.name} ${sexSymbol(p.a.sex)}'s ${word}${p.mated ? ', and they are mates now' : ''}.`;
 }
@@ -180,7 +206,7 @@ function habitatTitle(pairs) {
 function habitatText(model, pairs) {
     const place = placeOf(model, pairs[0].a) || 'A habitat';
     const list = pairs.slice(0, 3).map(p => {
-        const word = relationWord(model.ped.relation(p.a.guid, p.b.guid), p.b.sex);
+        const word = relationWord(p.rel, p.b.sex);
         return `${p.a.name} ${sexSymbol(p.a.sex)} and ${p.b.name} ${sexSymbol(p.b.sex)} (${word})`;
     });
     const more = pairs.length > 3 ? `, and ${pairs.length - 3} more` : '';
@@ -260,11 +286,92 @@ function summaryToast(model, muted) {
     });
 }
 
+// Animals a year from turning elderly (kinageing.js): once per animal per
+// game session, but for the species whose ones Auto mode sends to be sold
+// itself (setElderlyHandled).
+const elderlyWarned = new Set();
+let elderlyHandled = () => false;
+export function setElderlyHandled(fn) {
+    elderlyHandled = fn;
+}
+
+function elderlyStep(model) {
+    for (const w of nearingElderly(model, elderlyWarned)) {
+        if (elderlyHandled(w.animal.species)) continue;
+        elderlyWarned.add(w.animal.guid || w.animal.id);
+        const atTrade = w.animal.lt === 'trade';
+        // to the trade centre while the game still lets it go; selling,
+        // listing or releasing it there stays the player's choice
+        const actions = atTrade ? [] : [{ label: 'Send to the trade centre', icon: 'IconTrade', primary: true, run: () => sendElderlyToTrade(w.animal) }];
+        actions.push({ label: 'Locate', icon: 'IconLocation', primary: atTrade, run: () => locateAnimal(w.animal.id) });
+        toast({
+            severity: 'future', level: 'action',
+            title: `${speciesName(w.animal.species)}: ${w.animal.name} is nearly elderly`,
+            text: `${elderlyWarningText(w)}${atTrade ? ' It is at the trade centre now.' : ''}`,
+            actions,
+        });
+    }
+}
+
+// The click can come a minute after the toast, when the animal is somewhere
+// else: whatever stops the move is said, never dropped.
+function sendElderlyToTrade(animal) {
+    const now = getKinModel();
+    const a = now && now.animals.get(String(animal.id));
+    const failed = text => toast({ severity: 'future', level: 'heads', title: `${animal.name} was not sent to the trade centre`, text });
+    if (!a) return failed(`${animal.name} is no longer in this zoo.`);
+    if (a.lt === 'trade') return failed(`${a.name} is already at the trade centre: sell, trade or release it from there.`);
+    if (!canMove(a)) return failed(`${a.name} cannot be moved right now: ${a.moving ? 'it is already on the move' : 'it is not in a habitat'}. Find it with Locate and try again from the species board.`);
+    runPlan([{ id: a.id, to: TRADE, byPlayer: true }]).then(r => {
+        if (r && r.ok === false) failed(r.detail);
+    }, e => reportError('mod', `Sending ${a.name} to the trade centre failed`, e, { silent: true }));
+}
+
+// Auto mode's run in flight (kin.js setKinAlertFilter; none while no
+// species is on Auto): a pair it makes for a moment, a swap half done, is
+// not news. Such a pair is held back (pair key -> pair) and told once the
+// quiet is over if it is still there.
+const heldBack = new Map();
+
+function quietNow(p) {
+    const filter = getKinAlertFilter();
+    if (!filter) return false;
+    try {
+        return !!filter(p);
+    }
+    catch (e) {
+        return false;
+    }
+}
+
+// fresh: the scan's new pairs; watched: every watched pair now.
+// -> the pairs to tell now
+function afterQuiet(fresh, watched, muted) {
+    const out = [];
+    for (const p of fresh) {
+        if (quietNow(p)) heldBack.set(p.key, p);
+        else out.push(p);
+    }
+    const now = new Map(watched.map(p => [p.key, p]));
+    for (const key of Array.from(heldBack.keys())) {
+        const p = now.get(key);
+        if (!p || muted.has(p.species)) heldBack.delete(key);
+        else if (!quietNow(p)) {
+            heldBack.delete(key);
+            if (!out.some(x => x.key === key)) out.push(p);
+        }
+    }
+    return out;
+}
+
 function onModel(model) {
     const settings = getKinSettings();
     try {
         if (!model || model.scope !== 'park') {
-            if (!model) previous = null;
+            if (!model) {
+                previous = null;
+                heldBack.clear();
+            }
             return;
         }
         const now = Date.now();
@@ -272,6 +379,7 @@ function onModel(model) {
         const muted = mutedSpecies();
         // growing up (kinlife.js): its own switch, independent of the risk alerts
         lifeStep(model, settings, now, muted);
+        if (settings.elderlyAlert !== false) elderlyStep(model);
         const watched = watchedNow(model, settings);
         if (!settings.alerts) {
             remember(watched, now);
@@ -285,23 +393,10 @@ function onModel(model) {
             }
             return;
         }
-        let fresh = newRisks(previous, model, { includeKin: settings.alertKin, muted }).filter(p => {
+        const fresh = afterQuiet(newRisks(previous, model, { includeKin: settings.alertKin, muted }).filter(p => {
             const t = seen.get(p.key);
             return t == null || now - t > SEEN_MS;
-        });
-        // Auto mode's own run in flight (kin.js setKinAlertFilter); none
-        // while no species is on Auto
-        const quietFilter = getKinAlertFilter();
-        if (quietFilter) {
-            fresh = fresh.filter(p => {
-                try {
-                    return !quietFilter(p);
-                }
-                catch (e) {
-                    return true;
-                }
-            });
-        }
+        }), watched, muted);
         remember(watched, now);
         const byHab = new Map();
         for (const p of fresh) {
@@ -433,10 +528,13 @@ export function _resetLife() {
 }
 
 // Other alert modules (kinboxed.js) post in the same toast column and log:
-// { severity, level: 'action' | 'heads', title, text, actions }.
+// { severity, level: 'action' | 'heads', title, text, actions, answer }. A
+// level the player does not pop up (toastLevel) goes to the log only
+// (-> null); answer (the reply to the player's own click) always pops up.
 export function kinToast(opts) {
-    logNotice({ level: opts.level || 'heads', kind: opts.kind || 'other', title: opts.title, text: opts.text, hab: opts.hab, species: opts.species });
-    return toast(opts);
+    const level = opts.level || 'heads';
+    logNotice({ level, kind: opts.kind || 'other', title: opts.title, text: opts.text, hab: opts.hab, species: opts.species });
+    return opts.answer || toastAllowed(level) ? toast(opts) : null;
 }
 
 // For the browser harness.
@@ -448,7 +546,11 @@ export function installKinAlerts() {
     if (!isHudPage()) return true;
     // stay out of the way of the game's popups (Compare Mates, Genealogy)
     setInterval(() => {
-        if (root) setClass(root, 'underPopup', !!document.querySelector('.PopupActionsModule_root.show'));
+        const open = isGamePopupOpen();
+        for (const node of toastRoots) {
+            if (node.parentNode) setClass(node, 'underPopup', open);
+            else toastRoots.delete(node);
+        }
     }, 500);
     onKin((model, scope) => {
         if (scope && scope !== 'park') return;

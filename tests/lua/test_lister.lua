@@ -499,6 +499,17 @@ local function lastState()
 	local t = sent("PZ2QoL_ListerState")
 	return t[#t] and decode(t[#t].tArgs[1]) or nil
 end
+-- each result's verdict as it reached the page in this run: a run sends one
+-- once, in the first state after it is known, and leaves it out after that
+local function verdictsSent()
+	local t = {}
+	for _, s in ipairs(states()) do
+		for i, r in ipairs(s.results or {}) do
+			if type(r.verdict) == "table" and r.verdict ~= JNULL then t[i] = r.verdict end
+		end
+	end
+	return t
+end
 -- when result i (1-based) first showed a final status
 local function resultTime(tStates, i)
 	for _, s in ipairs(tStates) do
@@ -633,9 +644,10 @@ local tAll = states(nFrom)
 s = tAll[#tAll]
 check(s.phase == "done" and s.index == 5 and s.step == "", "done: " .. tostring(s.phase))
 check(#tAuctions == 5, "five listings sent")
+-- prices round as the page shows them (pricing.js nicePrice): 1234 -> 1230, 1500.6 -> 1500
 local tExpect = {
-	{ 101, 1234, 12, JNULL, false }, { 102, 5000, 6, "max", false }, { 103, 800, 12, JNULL, true },
-	{ 104, 100, 1, "min", false }, { 105, 1501, 3, JNULL, false },
+	{ 101, 1230, 12, JNULL, false }, { 102, 5000, 6, "max", false }, { 103, 800, 12, JNULL, true },
+	{ 104, 100, 1, "min", false }, { 105, 1500, 3, JNULL, false },
 }
 for i, e in ipairs(tExpect) do
 	local a = tAuctions[i]
@@ -699,7 +711,8 @@ check(runToEnd(60), "pregnant run finished")
 s = lastState()
 for i = 1, 2 do
 	check(s.results[i].status == "skipped" and s.results[i].kind == "pregnant", "pregnant " .. i .. " skipped: " .. tostring(s.results[i].kind))
-	check(s.results[i].detail == "Pregnant: the market won't take it until she gives birth.", "pregnant " .. i .. " reason: " .. tostring(s.results[i].detail))
+	-- the page words a skip by its kind (listercore.js RESULT_WORDS): no detail to add
+	check(s.results[i].detail == "", "pregnant " .. i .. " reason: " .. tostring(s.results[i].detail))
 end
 check(s.results[3].status == "listed", "the other one listed")
 check(#tAuctions == 1 and tAuctions[1].guid == 213, "a pregnant animal is never sent")
@@ -1208,15 +1221,20 @@ check(countMarks("lister_sel_other") >= 1, "multi-selection marked")
 -----------------------------------------------------------------------
 check(oView.tListeners["PZ2QoL_ListerSeen"] ~= nil, "listener PZ2QoL_ListerSeen")
 
--- the page's text, exactly as listercore.js encodeSeen writes it
-local p = Lister.ParseSeen("v1|animal_3|animal_3|1|100,5000,812.5,1,12,6|")
+-- the page's text, exactly as listercore.js encodeSeen writes it (v2: the
+-- text fields percent-encoded, then the quick, network, filter, source and
+-- page fields, unknown here)
+local function seenPct(s)
+	return (string.gsub(tostring(s or ""), "[^%w%-_%.!~%*'%(%)]", function(c) return string.format("%%%02X", string.byte(c)) end))
+end
+local p = Lister.ParseSeen("v2|animal_3|animal_3|1|100,5000,812.5,1,12,6||-|||-|||-|-,-|-,-|-||")
 check(p and p.sKey == "animal_3" and #p.tSel == 1 and p.tSel[1] == "animal_3" and p.bAllowed == true and p.sReason == "", "parse: selected, allowed")
 check(p and p.tLimits.nPriceMin == 100 and p.tLimits.nPriceMax == 5000 and p.tLimits.nPriceDefault == 812.5 and p.tLimits.nHoursMax == 12 and p.tLimits.nHoursDefault == 6, "parse: limits")
-p = Lister.ParseSeen("v1|animal_3||0|-,-,-,-,-,-|[STRING_LITERAL:Value=|Pregnant|] ")
+p = Lister.ParseSeen("v2|animal_3||0|-,-,-,-,-,-|" .. seenPct("[STRING_LITERAL:Value=|Pregnant|] ") .. "|-|||-|||-|-,-|-,-|-||")
 check(p and #p.tSel == 0 and p.bAllowed == false and p.tLimits.nPriceMin == nil and p.sReason == "[STRING_LITERAL:Value=|Pregnant|] ", "parse: empty selection, a reason with pipes")
-p = Lister.ParseSeen("v1|animal_3|?|-|-,-,-,-,-,-|")
+p = Lister.ParseSeen("v2|animal_3|?|-|-,-,-,-,-,-||-|||-|||-|-,-|-,-|-||")
 check(p and p.tSel == nil and p.bAllowed == nil, "parse: unreadable selection")
-check(Lister.ParseSeen("v2|animal_3|||||") == nil and Lister.ParseSeen(nil) == nil and Lister.ParseSeen("v1||a|1|1|") == nil, "parse: junk refused")
+check(Lister.ParseSeen("v2|animal_3|||||") == nil and Lister.ParseSeen(nil) == nil and Lister.ParseSeen("v2||a|1|1||-|||-|||-|-,-|-,-|-||") == nil, "parse: junk refused")
 
 -- the fake page: gets Lua's events a frame late, reports every 0.1 s what
 -- the game really shows (tNative), not what Lua's broken reads give
@@ -1233,8 +1251,8 @@ local function pageText()
 		local n = tNative.tLimits[sName]
 		tN[#tN + 1] = type(n) == "number" and tostring(n) or "-"
 	end
-	return table.concat({ "v1", tPage.sKey, table.concat(tSel, ","), a == true and "1" or a == false and "0" or "-",
-		table.concat(tN, ","), tNative.tActions.tradeDisallowedReason or "" }, "|")
+	return table.concat({ "v2", tPage.sKey, table.concat(tSel, ","), a == true and "1" or a == false and "0" or "-",
+		table.concat(tN, ","), seenPct(tNative.tActions.tradeDisallowedReason) }, "|") .. "|-|||-|||-|-,-|-,-|-||"
 end
 fnPageFrame = function()
 	if tPage == nil or not tPage.bOn then return end
@@ -1758,8 +1776,7 @@ end
 -----------------------------------------------------------------------
 -- 20. Quick trade / quick release (docs/PLAN-desk-quick-release.md,
 -- Phases 0 and 1): the page report v2, check runs (they never send), the
--- Phase 0a log lines, and the log-only wrappers around the game's own
--- quick handlers (Phase 0b)
+-- Phase 0a log lines, and the game's own quick handlers left alone
 -----------------------------------------------------------------------
 do
 	-- encodeURIComponent, as the page writes v2's text fields
@@ -1776,8 +1793,8 @@ do
 	check(p2 and p2.tQuick.bTrade == true and p2.tQuick.sTradeValue == "$1,200" and p2.tQuick.bRelease == false and p2.tQuick.sReleaseReason == sOdd and p2.tQuick.sReleaseValue == "85", "v2: quick fields with | , % decoded")
 	check(p2 and p2.tQuick.bRehome == false and p2.tQuick.nTradePrice == 1200 and p2.tQuick.nReleasePrice == 85, "v2: rehome and the numeric prices")
 	check(p2 and p2.tNet.bConn == true and p2.tNet.bLoading == false and p2.bReleaseable == nil and p2.sSource == "[AnimalExchange_Source_Description:Value=|Wild|]", "v2: network, filter, source")
-	local p1 = Lister.ParseSeen("v1|animal_3|animal_3|1|100,5000,812.5,1,12,6|[x|y]")
-	check(p1 and p1.nV == 1 and p1.bAllowed == true and p1.sReason == "[x|y]" and p1.tQuick == nil, "v1 still parsed")
+	-- the pack ships one Main.ovl, which reads v2: an older page's v1 is refused
+	check(Lister.ParseSeen("v1|animal_3|animal_3|1|100,5000,812.5,1,12,6|[x|y]") == nil, "v1 refused")
 	check(Lister.ParseSeen("v2|animal_3|animal_3|1|1,2,3,4,5,6|") == nil and Lister.ParseSeen("v2||a|1|||||||||||||") == nil, "v2: too few fields or no key refused")
 	check(Lister.Unpct("%7C%2C%25") == "|,%" and Lister.CompactReason(sLong) == "[AnimalList_Problem_NoBirthZoo]" and Lister.CompactReason("plain") == "plain", "unpct, compact reason")
 	local tJ, nP, sM = Lister.ParseJob("v1 150 check\n11 animal_1 - default")
@@ -1844,7 +1861,8 @@ do
 	check(sc.mode == "check" and sc.phase == "done" and sc.message == "Checked 3 of 3." and sc.paceMs == 150, "check: state (" .. tostring(sc.message) .. ", pace " .. tostring(sc.paceMs) .. ")")
 	check(Lister.nPaceMs == nListerPace, "check: the listing pace is left alone")
 	check(sc.results[1].status == "checked" and sc.results[2].status == "checked" and sc.results[3].status == "checked", "check: every animal checked")
-	local v1, v2, v3 = sc.results[1].verdict, sc.results[2].verdict, sc.results[3].verdict
+	local tV = verdictsSent()
+	local v1, v2, v3 = tV[1], tV[2], tV[3]
 	check(v1.trade == true and v1.quickTrade == true and v1.quickTradePrice == 900 and v1.src == "page" and v1.v == 2, "check: market animal's verdict")
 	check(v2.trade == false and v2.tradeWhy == "[AnimalList_Problem_NoBirthZoo]" and v2.quickTrade == true and v2.quickTradeValue == "$1,200" and v2.quickTradePrice == 1200, "check: quick-only animal's verdict")
 	check(v2.quickRelease == false and v2.quickReleaseWhy == "[AnimalList_Problem_NoBirthZoo]" and v2.quickReleasePrice == 85 and v2.rehome == false, "check: its release refused with the reason")
@@ -1929,85 +1947,13 @@ do
 	-- a listing run with a v2 page records the verdicts too, and lists as before
 	s = pageRun({ page = { fnText = pageTextV2 } }, { { 2061, tQuickOnly }, { 2062, tMarket } }, "list v2")
 	check(#tAuctions == 1 and tAuctions[1].guid == 2062 and s.mode == "list", "list v2: only the market animal listed")
-	check(s.results[1].kind == "untradeable" and s.results[1].verdict.quickTrade == true and s.results[2].status == "listed" and s.results[2].verdict.trade == true, "list v2: verdicts recorded")
+	local tListV = verdictsSent()
+	check(s.results[1].kind == "untradeable" and tListV[1].quickTrade == true and s.results[2].status == "listed" and tListV[2].trade == true, "list v2: verdicts recorded")
 	fnPageFrame = nil
 
-	-- Phase 0b: the game's quick handlers, wrapped to log only
-	check(StorageMode.OnQuickTradeAnimals ~= fnGameQuickTrade and StorageMode.OnReleaseAnimalsToWild ~= fnGameRelease, "0b: both handlers wrapped")
-	reset()
-	oStorage:TransitionIn()
-	addAnimal(2101, { species = "Lion", name = "Kito" })
-	addAnimal(2102, { species = "Lion", name = "Nala" })
-	tLog = {}
-	tNative.tListReads = {}
-	local tIDs = { "animal_1" }
-	local nProbeAt = nClock
-	local tR = table.pack(oStorage:OnQuickTradeAnimals(tIDs))
-	local cq = calls("GameQuickTrade")
-	check(#cq == 1 and cq[1].tArgs.n == 2 and cq[1].tArgs[1] == oStorage and rawequal(cq[1].tArgs[2], tIDs), "0b: the game's handler got exactly self and the same table")
-	check(tR.n == 3 and tR[1] == "qt" and tR[2] == nil and tR[3] == 3, "0b: its results passed back")
-	check(#tIDs == 1 and tIDs[1] == "animal_1", "0b: the table unchanged")
-	check(#calls("Auction") + #calls("Select") + #calls("Clear") + #calls("QuickTrade") + #calls("Release") == 0, "0b: the wrapper sends nothing itself")
-	local tc = find("probe_call")
-	check(tc and tc.kind == "quicktrade" and tc.type == "table" and tc.len == 1 and tc.count == 1 and tc.kmin == 1 and tc.kmax == 1 and tc.nargs == 2, "0b: the _tIDs shape logged")
-	local ti = find("probe_id")
-	check(ti and ti.vtype == "string" and ti.v == "animal_1" and ti.guid == "2101" and ti.key == "animal_1" and ti.via == "key", "0b: each value, its type and the animal it names")
-	check(countMarks("lister_probe_quicktrade") == 1 and find("probe_after") ~= nil, "0b: marked, and the network right after")
-	seconds(2)
-	serverError(5, 31)
-	local te = find("probe_server_error")
-	check(te and te.code == 5 and te.req == 31 and te.ms >= 1900 and countMarks("lister_server_error_type_31") == 1, "0b: a server error in the next 10 s logged with its request type")
-	-- the sale: the row leaves the storage list
-	reshuffle({ 2102 })
-	seconds(1)
-	local tg = find("probe_gone")
-	check(tg and tg.guid == "2101" and tg.ms >= 2000 and tg.ms <= 3500, "0b: when the row left the list (" .. tostring(tg and tg.ms) .. " ms)")
-	check(find("probe_end") and find("probe_end").gone == 1 and Lister.tProbe == nil, "0b: the watch ends when every row is gone")
-	-- reading the list while the game applies the quick trade crashed a 3.2.0
-	-- player's game (Nexus, 2026-10-20): no probe read in the second after it
-	local nEarlyProbe = 0
-	for _, r in ipairs(tNative.tListReads) do
-		if r > nProbeAt and r < nProbeAt + 1.0 then nEarlyProbe = nEarlyProbe + 1 end
-	end
-	check(nEarlyProbe == 0 and #tNative.tListReads >= 2, "0b: the list is not read in the second after the handler (" .. nEarlyProbe .. " of " .. #tNative.tListReads .. ")")
-	seconds(9)
-	local nErr = count("probe_server_error")
-	serverError(5, 31)
-	check(count("probe_server_error") == nErr, "0b: errors after 10 s are not the probe's")
-	-- odd ids and extra arguments: the game's handler still gets exactly them
-	local tOdd = { [0] = 12345.0, "x", n = 2 }
-	tR = table.pack(oStorage:OnReleaseAnimalsToWild(tOdd, "extra"))
-	local cr = calls("GameRelease")
-	check(#cr == 1 and cr[1].tArgs.n == 3 and rawequal(cr[1].tArgs[2], tOdd) and cr[1].tArgs[3] == "extra" and tR.n == 1 and tR[1] == "rel", "0b: release: the same arguments and result")
-	tc = nil
-	for _, x in ipairs(tLog) do if x.ev == "probe_call" and x.t.kind == "release" then tc = x.t end end
-	check(tc and tc.kmin == 0 and tc.kmax == 1 and tc.count == 3, "0b: release: a 0-based or odd table's keys logged")
-	oStorage:OnReleaseAnimalsToWild(nil)
-	check(#calls("GameRelease") == 2, "0b: no ids: the game's handler still runs")
-	-- the probe itself failing never keeps the game's handler from running
-	local fnProbe = Lister._ProbeQuick
-	Lister._ProbeQuick = function() error("probe broke") end
-	oStorage:OnQuickTradeAnimals({ "animal_1" })
-	Lister._ProbeQuick = fnProbe
-	check(#calls("GameQuickTrade") == 2 and countMarks("lister_probe_fail") == 1, "0b: a failing probe: the handler still runs")
-	-- the game's handler raising: the caller sees it, as in vanilla
-	StorageModeThrow = true
-	local bOkGame = pcall(oStorage.OnQuickTradeAnimals, oStorage, { "animal_1" })
-	StorageModeThrow = nil
-	check(not bOkGame, "0b: the game's own error is not swallowed")
-	-- no handler to wrap (another build): nothing breaks
-	local tBare = { TransitionIn = function() end, TransitionOut = function() end, Advance = function() end }
-	local bOkBare = pcall(Lister._PatchStorageMode, Lister, tBare)
-	check(bOkBare and tBare.OnQuickTradeAnimals == nil, "0b: a hub mode without the handlers is left alone")
-	Core.bTrace = nil
-	Core.Log = nil
-	-- a release build has no log: no probe, the game's handler alone
-	tNative.tListReads = {}
-	local nGameQt = #calls("GameQuickTrade")
-	local nProbes = Lister.nProbes
-	oStorage:OnQuickTradeAnimals({ "animal_1" })
-	seconds(3)
-	check(#calls("GameQuickTrade") == nGameQt + 1 and Lister.nProbes == nProbes and Lister.tProbe == nil and #tNative.tListReads == 0, "0b: release build: no probe and no list read, the handler still runs (" .. (#calls("GameQuickTrade") - nGameQt) .. " " .. tostring(Lister.nProbes - nProbes) .. " " .. tostring(Lister.tProbe) .. " " .. #tNative.tListReads .. ")")
+	-- the game's own quick handlers stay as the game made them: wrapping
+	-- them read the storage list while the game rebuilt it (a native crash)
+	check(StorageMode.OnQuickTradeAnimals == fnGameQuickTrade and StorageMode.OnReleaseAnimalsToWild == fnGameRelease, "the game's quick handlers are left unwrapped")
 	oStorage:TransitionOut()
 	check(#calls("QuickTrade") == 0 and #calls("Release") == 0, "the engine never called the quick natives")
 end
@@ -2100,7 +2046,7 @@ do
 	for _ in pairs(q[1] and q[1].tArgs[1] or {}) do nKeys = nKeys + 1 end
 	check(nKeys == 1, "quick: the table holds the key only")
 	check(s.mode == "quicktrade" and s.phase == "done" and s.message == "Quick-traded 2 of 2." and s.results[1].status == "traded" and s.results[2].status == "traded", "quick: done (" .. tostring(s.message) .. ")")
-	check(s.results[1].price == 1200 and s.results[1].verdict.quickTrade == true, "quick: the price and verdict with the result")
+	check(s.results[1].price == 1200 and verdictsSent()[1].quickTrade == true, "quick: the price and verdict with the result")
 	local g1 = find("quick_gone", "3001")
 	check(g1 and g1.ms >= 1000 and g1.ms <= 1600, "quick: quick_gone ms logged, gone read twice (" .. tostring(g1 and g1.ms) .. ")")
 	check(q[2] and q[2].t - q[1].t >= 1.0, "quick: a pause of at least 1 s between the two")
@@ -2529,6 +2475,10 @@ do
 	refusedRun({ { 4083, tiger(4083, { tradeAllowed = false, reason = NBZ, q = { quickReleaseAllowed = false, quickReleaseDisallowedReason = "[AnimalList_Problem_CashSeeded]" } }) } }, "onrefused=release")
 	check(runToEnd(60), "not listable, release not allowed: finished")
 	check(#calls("Release") == 0 and lastState().results[1].status == "skipped" and lastState().results[1].kind == "untradeable", "not listable, release not allowed: skipped")
+	-- a reason that may pass (an injury): skipped with it, never quick-traded
+	refusedRun({ { 4084, tiger(4084, { tradeAllowed = false, reason = "[AnimalList_Problem_Injured]" }) } }, "onrefused=quicktrade")
+	check(runToEnd(60), "passing reason: finished")
+	check(#calls("QuickTrade") == 0 and lastState().results[1].status == "skipped" and lastState().results[1].kind == "untradeable", "passing reason (an injury): skipped, never quick-traded")
 
 	-- not a refusal: an untradeable skip the game won't quick-trade either, a timeout (no answer), DidNotGetResponse -> no quick action
 	refusedRun({ { 4031, tiger(4031, { tradeAllowed = false, reason = "[AnimalList_Problem_Infected]", q = { quickTradeAllowed = false, quickTradeDisallowedReason = "[AnimalList_Problem_Infected]" } }) },

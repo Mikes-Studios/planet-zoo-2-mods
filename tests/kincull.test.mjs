@@ -101,14 +101,15 @@ test('sending one by hand adds to the plan, it does not swap another back', () =
     for (const mv of base.moves) assert.ok(more.moves.some(x => x.id === mv.id));
 });
 
-test('juveniles are never picked automatically, only by hand', () => {
+// a juvenile grows only in a habitat: neither the gene rules nor a pick send one away
+test('juveniles are never picked, automatically or by hand', () => {
     n = 0;
     const animals = [an(M, '1', 5), an(F, '1', 5), an(F, '1', 4), an(F, '1', 2), an(F, '1', 1),
         an(F, '1', 1, { juv: true, infertile: true, age: 1 }), an(M, '1', 1, { juv: true, infertile: true, age: 1 })];
     const plan = cullPlan(model(animals), 'Lemur', { social: { max: 4 } }, { options: { fill: 1 } });
     assert.deepEqual(plan.moves.map(m => m.id), ['a5']);
     const hand = cullPlan(model(animals), 'Lemur', { social: { max: 4 } }, { options: { fill: 1, cullIds: new Set(['a6']) } });
-    assert.ok(hand.moves.some(m => m.id === 'a6'));
+    assert.ok(!hand.moves.some(m => m.id === 'a6'));
 });
 
 // fertility gene 0%: both strands the same at every fertility locus
@@ -152,11 +153,11 @@ test('poor gene levels send more away, from habitats with room too', () => {
     assert.match(best.moves.find(x => x.id === 'a9').reason, /poor genes/);
 });
 
-test('young are picked by the gene rules only with young on', () => {
+test('the gene rules read adults only: a poor juvenile stays', () => {
     n = 0;
     const animals = [an(M, '2', 5), an(F, '2', 5), an(F, '2', 4, { juv: true, infertile: true, age: 1, genes: ZF(4) })];
     assert.equal(cullPlan(model(animals), 'Lemur', INFO).moves.length, 0);
-    assert.deepEqual(cullPlan(model(animals), 'Lemur', INFO, { options: { young: true } }).moves.map(x => x.id), ['a3']);
+    assert.equal(cullPlan(model(animals), 'Lemur', INFO, { options: { young: true } }).moves.length, 0);
 });
 
 test('core only keeps just the breeding core', () => {

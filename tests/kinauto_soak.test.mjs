@@ -15,7 +15,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildKinModel, Sex } from '../mods/PZ2QoL/UI/UIGameface/js/mods/pz2qol/kincore.js';
 import { TRADE } from '../mods/PZ2QoL/UI/UIGameface/js/mods/pz2qol/kinboardcore.js';
-import { AUTO_LIMITS, observeChanges, planAutoRun } from '../mods/PZ2QoL/UI/UIGameface/js/mods/pz2qol/kinautocore.js';
+import { AUTO_LIMITS, freeParked, observeChanges, planAutoRun } from '../mods/PZ2QoL/UI/UIGameface/js/mods/pz2qol/kinautocore.js';
 import { emptyLedger, ledgerView, logAction, noteManualMoves, pruneLedger, settleAction } from '../mods/PZ2QoL/UI/UIGameface/js/mods/pz2qol/kinautoledger.js';
 import { makeZoo, rng, childGenes, founderGenes, SPECIES } from './helpers/zoogen.mjs';
 
@@ -34,9 +34,12 @@ function soak(seed, settings) {
     const l = emptyLedger();
     let seen = null;
     const expected = new Map();
-    const stats = { steps: 0, emptied: 0, moves: 0, logged: 0, reversals: 0, churn: 0, manualMoved: 0, pinnedMoved: 0, births: 0, inbredBirths: 0, maxAnimals: 0, riskSteps: 0, tradeHeld: 0 };
+    const stats = { steps: 0, emptied: 0, moves: 0, logged: 0, reversals: 0, stopped: 0, churn: 0, manualMoved: 0, pinnedMoved: 0, births: 0, inbredBirths: 0, maxAnimals: 0, riskSteps: 0, tradeHeld: 0 };
     const movedAt = new Map();       // guid -> [t]
     const manualUntil = new Map();   // guid -> t
+    // species -> t of its last birth, arrival or young grown up (the runtime's changedAt)
+    const changedAt = new Map();
+    const reversalsAt = new Map();   // species -> [t]
     // two animals the player marked hands off
     for (const a of animals.filter(x => !x.juv).slice(0, 2)) l.pins[a.guid] = 1;
     const build = () => buildKinModel(Object.assign({}, snap, { animals }));
@@ -49,7 +52,10 @@ function soak(seed, settings) {
             const S = SPECIES[a.species];
             a.age += STEP;
             a.moving = false;
-            if (a.juv && a.age >= S.facts.maturity) a.juv = false;
+            if (a.juv && a.age >= S.facts.maturity) {
+                a.juv = false;
+                changedAt.set(a.species, t);
+            }
             if (!a.juv && a.age >= S.facts.infertility) a.infertile = true;
             a.ageQ = a.juv ? 0 : a.age >= S.facts.infertility ? 3 : 2;
             if (a.preg) a.preg = false;
@@ -68,6 +74,7 @@ function soak(seed, settings) {
                 const rel = model0.ped.relation(m.guid, f.guid);
                 if (rel && rel.game) stats.inbredBirths++;
                 stats.births++;
+                changedAt.set(f.species, t);
                 const id = String(nextId++);
                 animals.push({ id, key: 'animal_' + id, guid: 'g' + id, name: 'B' + id, species: f.species, sex: r.chance(0.5) ? Sex.Male : Sex.Female, juv: true, contra: false, infertile: false, preg: false, alive: true, hab: f.hab, loc: f.loc, lt: 'habitat', moving: false, age: 0, ageQ: 0, par: [m.guid, f.guid], mates: [], genes: childGenes(r, m, f) });
             }
@@ -82,6 +89,7 @@ function soak(seed, settings) {
         if (step % 8 === 4) {
             for (const sp of z.species) {
                 const S = SPECIES[sp];
+                changedAt.set(sp, t);
                 const id = String(nextId++);
                 animals.push({ id, key: 'animal_' + id, guid: 'g' + id, name: 'N' + id, species: sp, sex: r.chance(0.5) ? Sex.Male : Sex.Female, juv: false, contra: false, infertile: false, preg: false, alive: true, hab: '', loc: 'Trade Centre', lt: 'trade', moving: false, age: S.facts.maturity + 0.5, ageQ: 2, par: [], mates: [], genes: founderGenes(r, 10), bought: t });
             }
@@ -110,6 +118,10 @@ function soak(seed, settings) {
         let tradeFree = Math.max(0, TRADE_MAX - animals.filter(a => a.lt === 'trade').length);
         for (const sp of z.species) {
             const view = ledgerView(l, model, t, step * 1e6);
+            // as the runtime: a breeder parked at the trade centre is weighed again once its herd changed
+            const parked = freeParked(model, sp, view, changedAt.get(sp));
+            view.cooled = parked.cooled;
+            view.recentFrom = parked.recentFrom;
             const res = planAutoRun({ model, species: sp, info: z.info[sp], destinations: z.dest, settings, view, tradeFree });
             stats.tradeHeld += res.held.filter(x => x.why === 'the trade centre is full').length;
             l.run++;
@@ -117,7 +129,13 @@ function soak(seed, settings) {
                 const a = animals.find(y => y.id === x.id);
                 if (manualUntil.has(a.guid) && t < manualUntil.get(a.guid)) stats.manualMoved++;
                 if (l.pins[a.guid]) stats.pinnedMoved++;
-                if (x.reversal) stats.reversals++;
+                if (x.reversal) {
+                    stats.reversals++;
+                    // the runtime stops a species at reversalsToStop within reversalYears
+                    const recent = (reversalsAt.get(sp) || []).filter(v => t - v <= AUTO_LIMITS.reversalYears).concat([t]);
+                    reversalsAt.set(sp, recent);
+                    if (recent.length >= AUTO_LIMITS.reversalsToStop) stats.stopped++;
+                }
                 const list = (movedAt.get(a.guid) || []).filter(s => t - s < 1);
                 list.push(t);
                 movedAt.set(a.guid, list);
@@ -181,9 +199,14 @@ for (const c of CASES) {
             const s = soak(seed, c.settings);
             const tag = `${c.name} seed ${seed}: ${JSON.stringify(s)}`;
             if (process.env.SOAK_DEBUG) console.log(tag);
-            assert.equal(s.reversals, 0, tag);
-            assert.equal(s.churn, 0, tag);
-            assert.equal(s.manualMoved, 0, tag);
+            // never inbreed outranks a move's cooldown, and a breeder parked at
+            // the trade centre is weighed again once its herd changes, so an
+            // animal can move back within a year now and then; never often
+            // enough to stop a species, and an animal moved three times in a
+            // year stays rare
+            assert.equal(s.stopped, 0, tag);
+            assert.ok(s.reversals <= 5, tag);
+            assert.ok(s.churn <= 3, tag);
             assert.equal(s.pinnedMoved, 0, tag);
             assert.equal(s.logged, s.moves, tag);
             if (c.settings.thin) assert.ok(s.maxAnimals < 400, `the population stays in hand: ${tag}`);

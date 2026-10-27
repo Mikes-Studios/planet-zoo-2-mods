@@ -29,7 +29,9 @@ let loadReq = null;
 let loadParts = [];
 let loadTimer = null;
 let saveTimer = null;
-let pending = []; // [key, fn] changes made before the file was read
+let reloadTimer = null; // set while a read of the store waits for the saves in flight
+let pending = []; // [key, fn] changes not in the file yet, replayed on top of its next read
+const savesInFlight = new Map(); // save request id -> the pending changes it carries
 let epoch = 0; // counts reads of the store: a new zoo load gives a new one
 const listeners = new Set();
 
@@ -46,10 +48,11 @@ function notify() {
 }
 
 function setStatus(s) {
-    if (status === s) return;
+    if (status === s) return false;
     status = s;
     breadcrumb('store_' + s);
     notify();
+    return true;
 }
 
 function finishLoad(ok, text) {
@@ -58,8 +61,8 @@ function finishLoad(ok, text) {
     epoch++;
     if (!ok) {
         reason = String(text || 'nopark');
-        setStatus('memory');
-        notify();
+        // a load tells the listeners once, also when the status stays
+        if (!setStatus('memory')) notify();
         return;
     }
     reason = '';
@@ -74,12 +77,9 @@ function finishLoad(ok, text) {
     // zoo's data, a mirror) is not carried over, only this view's changes
     const needSave = pending.length > 0;
     // this session's changes, again on top of the file
-    const merged = replayChanges(fromFile, pending);
-    pending = [];
-    data = merged;
+    data = replayChanges(fromFile, pending);
     writeMirror();
-    setStatus('file');
-    notify();
+    if (!setStatus('file')) notify();
     if (needSave) scheduleSave(0);
 }
 
@@ -96,26 +96,55 @@ function install() {
         if (have >= parts) finishLoad(true, loadParts.slice(0, parts).join(''));
     });
     engine.on('PZ2QoL_StoreSaved', (reqId, ok) => {
-        if (ok !== true) {
+        const carried = savesInFlight.get(String(reqId));
+        // a save sent as its park ended answers for a zoo the view has left
+        if (!carried) return;
+        savesInFlight.delete(String(reqId));
+        if (ok === true) {
+            pending = pending.filter(change => !carried.includes(change));
+        }
+        else {
             reportError('mod', 'PZ2QoL could not keep its data; changes last until the game closes', 'PZ2QoL_StoreSave', { silent: true });
             reason = reason || 'failed';
             setStatus('memory');
         }
+        if (reloadTimer && savesInFlight.size === 0) reloadNow();
     });
     // the Lua side (re)connected: read the store if we could not before
     engine.on('PZ2QoL_Hello', () => {
         if (status === 'file') return;
-        loadReq = null; // a request sent before the Lua side was there is never answered
-        loadUserData();
+        reloadWhenSaved();
     });
     // a park started or ended, or its save was loaded: read the store again
-    engine.on('PZ2QoL_StoreReset', () => {
+    engine.on('PZ2QoL_StoreReset', why => {
+        const saveWaiting = saveTimer !== null;
         clearTimeout(saveTimer);
+        saveTimer = null;
         epoch++;
+        if (!why || why === 'park') {
+            // Lua has cleared its zoo key, so a save cannot land: a change made in the last 400 ms of a park is lost
+            pending = [];
+            savesInFlight.clear();
+        }
+        else if (saveWaiting) {
+            sendSave();
+        }
         if (status === 'file') status = 'loading';
-        loadReq = null;
-        loadUserData();
+        reloadWhenSaved();
     });
+}
+
+// a read while a save is unanswered could replay a change the file already holds
+function reloadWhenSaved() {
+    loadReq = null; // an earlier request's answer may predate the reset
+    if (savesInFlight.size === 0) return reloadNow();
+    if (!reloadTimer) reloadTimer = setTimeout(reloadNow, ANSWER_TIMEOUT_MS);
+}
+
+function reloadNow() {
+    clearTimeout(reloadTimer);
+    reloadTimer = null;
+    loadUserData();
 }
 
 // Reads the file (again). Resolves when it is read or given up on.
@@ -154,14 +183,19 @@ function scheduleSave(delay = SAVE_DELAY_MS) {
         return;
     }
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => {
-        try {
-            engine.trigger('PZ2QoL_StoreSave', 'S' + (++reqSeq), asciiJson(data));
-        }
-        catch (e) {
-            reportError('mod', 'PZ2QoL data could not be saved', e, { silent: true });
-        }
-    }, delay);
+    saveTimer = setTimeout(sendSave, delay);
+}
+
+function sendSave() {
+    saveTimer = null;
+    const reqId = 'S' + (++reqSeq);
+    try {
+        engine.trigger('PZ2QoL_StoreSave', reqId, asciiJson(data));
+        savesInFlight.set(reqId, pending.slice());
+    }
+    catch (e) {
+        reportError('mod', 'PZ2QoL data could not be saved', e, { silent: true });
+    }
 }
 
 export function getUserData(key) {
@@ -175,7 +209,7 @@ export function updateUserData(key, fn) {
     const v = fn(data[key]);
     if (v === undefined) delete data[key];
     else data[key] = v;
-    if (status !== 'file') pending.push([key, fn]);
+    pending.push([key, fn]);
     writeMirror();
     scheduleSave();
 }
@@ -211,6 +245,11 @@ export function _resetUserStoreForTests(value = {}) {
     status = 'loading';
     reason = '';
     pending = [];
+    savesInFlight.clear();
+    clearTimeout(saveTimer);
+    saveTimer = null;
+    clearTimeout(reloadTimer);
+    reloadTimer = null;
     loadReq = null;
     epoch++;
 }

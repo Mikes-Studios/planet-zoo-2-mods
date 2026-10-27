@@ -6,7 +6,8 @@
 // long pause after a server refusal stays as it is.
 import { h, setClass, setText } from '/js/mods/pz2qol/ui.js';
 import { breadcrumb } from '/js/mods/pz2qol/errors.js';
-import { getPref, onPrefs, setPref } from '/js/mods/pz2qol/prefs.js';
+import { getPref, onPrefs, updatePref } from '/js/mods/pz2qol/prefs.js';
+import { callAll } from '/js/mods/pz2qol/storecore.js';
 
 export const PACE = {
     lister: {
@@ -57,7 +58,7 @@ onPrefs((status, key) => {
     for (const k of Object.keys(PACE)) {
         if (next[k] === values[k]) continue;
         values = Object.assign({}, values, { [k]: next[k] });
-        listeners.forEach(fn => fn(k, next[k]));
+        callAll(listeners, k, next[k]);
     }
 });
 
@@ -75,12 +76,13 @@ export function setPace(kind, v) {
     if (next === values[kind]) return;
     values = Object.assign({}, values, { [kind]: next });
     try {
-        setPref(PREF_KEY, Object.assign({}, values));
+        // only this slider's key: the other page may have saved the other one
+        updatePref(PREF_KEY, saved => Object.assign({}, saved && typeof saved === 'object' ? saved : {}, { [kind]: next }));
     }
     catch (e) {
         // this session only
     }
-    listeners.forEach(fn => fn(kind, next));
+    callAll(listeners, kind, next);
 }
 
 export function onPace(fn) {

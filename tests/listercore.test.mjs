@@ -1,8 +1,9 @@
 // node --test tests/listercore.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { cautionOf, isFrontierZoo } from '../mods/PZ2QoL/UI/UIGameface/js/mods/pz2qol/scores.js';
 import {
-    activeFilterCount, basisScore, beyondBest, blockOf, cautionOf, DESK_FILTERS, deskRows, encodeJob, filterRows, normalizeFilters, normalizeState,
+    activeFilterCount, basisScore, beyondBest, blockOf, DESK_FILTERS, deskRows, encodeJob, filterRows, normalizeFilters, normalizeState,
     PREGNANT_TEXT, RESULT_WORDS, BLOCK_WORDS, NOID_TEXT, partialJobText,
     reasonText, resetFilters, retryGuids, sortRows, speciesCounts, summaryText, tally, tickable, timeLeftText, tradeProblemKeys,
 } from '../mods/PZ2QoL/UI/UIGameface/js/mods/pz2qol/listercore.js';
@@ -11,7 +12,7 @@ const A = (key, over = {}) => Object.assign({
     id: key.replace('animal_', ''), key, species: 'Lion', gender: 0, maturity: 2, isPregnant: false, isMoving: false, isShoal: false,
     auctionTimerSeconds: -1, name: 'L' + key, medal: 'silver', genes: { size: 0.5, longevity: 0.5, fertility: 0.5, immunity: 0.5 },
 }, over);
-const advise = a => ({ price: a.name === 'Lnoprice' ? 0 : 1000, confidence: 'high', reason: '' });
+const advise = a => { const price = a.name === 'Lnoprice' ? 0 : 1000; return { price, basePrice: price, confidence: 'high', reason: '' }; };
 
 test('blocks: listed, moving, pregnant, juvenile, elderly infertile; caution: infertile', () => {
     assert.equal(blockOf(A('animal_1', { auctionTimerSeconds: 3600 })), 'listed');
@@ -65,11 +66,11 @@ test('job text: header, one line per listable animal, no price as "-"', () => {
     const { text, items } = encodeJob(rows, { paceMs: 2500, hours: 'max' });
     assert.equal(text, 'v1 2500\n11 animal_1 1000 max\n22 animal_2 - max');
     assert.deepEqual(items.map(r => r.guid), ['11', '22']);                    // listed and GUID-less rows left out
-    assert.equal(encodeJob(rows, { paceMs: 200, hours: 6.4 }).text.split('\n')[0], 'v1 1000');   // pace never under 1 s
-    assert.ok(encodeJob(rows, { hours: 6.4 }).text.endsWith('22 animal_2 - 6'));
+    assert.equal(encodeJob(rows, { paceMs: 200, hours: 6.4 }).text.split('\n')[0], 'v1 200');   // the engine keeps the 1 s floor (Lister.nPaceMin)
+    assert.ok(encodeJob(rows, { paceMs: 2500, hours: 6.4 }).text.endsWith('22 animal_2 - 6'));
     // odd keys or GUIDs never reach the engine (a space would break the line)
     const odd = deskRows([A('animal 9'), A('animal_8'), A('animal_7')], new Map([['animal 9', '9'], ['animal_8', '8 5'], ['animal_7', 'ab-12']]), advise);
-    assert.deepEqual(encodeJob(odd).items.map(r => r.guid), ['ab-12']);
+    assert.deepEqual(encodeJob(odd, { paceMs: 2500 }).items.map(r => r.guid), ['ab-12']);
 });
 
 test('state: normalised, tallied, summed up, retry list', () => {
@@ -208,9 +209,12 @@ test('sort, normalise, counts, reset', () => {
     assert.equal(r.keepBest, 0);
 });
 
-import { decodeSeen, encodeSeen, encodeSeenV1, readSeen, SEEN_LIMITS } from '../mods/PZ2QoL/UI/UIGameface/js/mods/pz2qol/listercore.js';
+import { encodeSeen, readSeen, SEEN_FIELDS, SEEN_LIMITS } from '../mods/PZ2QoL/UI/UIGameface/js/mods/pz2qol/listercore.js';
 
-test('page reports for the engine: what the DataStore shows, as plain text (v1, an older Main.ovl)', () => {
+// a field of the page report, by name (pz2qol.lister.lua ParseSeen reads it back)
+const seenField = (text, name) => text.split('|')[SEEN_FIELDS.indexOf(name)];
+
+test('page reports for the engine: what the DataStore shows, as plain text', () => {
     const store = {
         'hubAnimalsData/animalStorageData': { selectedAnimalIDs: ['animal_3'] },
         'hubAnimalsData/animalStorageData/actions': { tradeAllowed: true, tradeDisallowedReason: '' },
@@ -221,18 +225,20 @@ test('page reports for the engine: what the DataStore shows, as plain text (v1, 
     assert.deepEqual(s.sel, ['animal_3']);
     assert.equal(s.allowed, true);
     assert.equal(SEEN_LIMITS.length, 6);
-    assert.equal(encodeSeenV1(s), 'v1|animal_3|animal_3|1|100,5000,812.5,1,12,6|');
+    assert.ok(encodeSeen(s).startsWith('v2|animal_3|animal_3|1|100,5000,812.5,1,12,6||'));
     // nothing selected, not allowed with a reason that holds pipes, limits missing
     store['hubAnimalsData/animalStorageData'].selectedAnimalIDs = [];
     store['hubAnimalsData/animalStorageData/actions'] = { tradeAllowed: false, tradeDisallowedReason: '[STRING_LITERAL:Value=|Pregnant|]\n' };
     store.animalTradeListingData = { tradePriceMin: NaN, tradePriceMax: '5000' };
-    assert.equal(encodeSeenV1(readSeen('animal_3', read)), 'v1|animal_3||0|-,-,-,-,-,-|[STRING_LITERAL:Value=|Pregnant|] ');
+    const refused = encodeSeen(readSeen('animal_3', read));
+    assert.ok(refused.startsWith('v2|animal_3||0|-,-,-,-,-,-|'));
+    assert.equal(decodeURIComponent(seenField(refused, 'reason')), '[STRING_LITERAL:Value=|Pregnant|]\n');
     // unreadable selection and data; a read that throws; odd ids
-    assert.equal(encodeSeenV1(readSeen('animal_3', () => undefined)), 'v1|animal_3|?|-|-,-,-,-,-,-|');
-    assert.equal(encodeSeenV1(readSeen('animal_3', () => { throw new Error('x'); })), 'v1|animal_3|?|-|-,-,-,-,-,-|');
+    assert.ok(encodeSeen(readSeen('animal_3', () => undefined)).startsWith('v2|animal_3|?|-|-,-,-,-,-,-|'));
+    assert.ok(encodeSeen(readSeen('animal_3', () => { throw new Error('x'); })).startsWith('v2|animal_3|?|-|-,-,-,-,-,-|'));
     store['hubAnimalsData/animalStorageData'].selectedAnimalIDs = ['animal_3', 7, null, 'a|b,c d'];
     assert.equal(readSeen('animal_3', read).sel.length, 3);
-    assert.ok(encodeSeenV1(readSeen('animal_3', read)).startsWith('v1|animal_3|animal_3,7,abcd|0|'));
+    assert.equal(seenField(encodeSeen(readSeen('animal_3', read)), 'selection'), 'animal_3,7,abcd');
 });
 
 // ------------------------------------------- what Animal Storage was scoped to
@@ -312,7 +318,7 @@ test('noid: rows the game gave no id for are blocked, not counted, not in the jo
     // another block says more than noid (on the market stays "On the market")
     assert.equal(deskRows([A('animal_3', { auctionTimerSeconds: 99 })], new Map(), advise, failed)[0].block, 'listed');
     // a fingerprint token is a GUID like any other for the job
-    const { items, text } = encodeJob(rows);
+    const { items, text } = encodeJob(rows, { paceMs: 3000 });
     assert.deepEqual(items.map(r => r.key), ['animal_1', 'animal_2']);
     assert.ok(text.split('\n').includes('fp7 animal_2 1000 max'));
     // what List N counts: tickable rows only
@@ -424,7 +430,7 @@ test('deskRows with verdicts: quick rows are their own block, never sellable, ne
     assert.equal(normalizeFilters({ state: 'quick' }).state, 'quick');
     // sort: listable first; the job never holds a quick row
     assert.deepEqual(sortRows(out, 'name').slice(0, 2).map(r => r.key).sort(), ['animal_1', 'animal_4']);
-    const job = encodeJob(out);
+    const job = encodeJob(out, { paceMs: 3000 });
     assert.deepEqual(job.items.map(r => r.key), ['animal_1', 'animal_4']);
     assert.equal(BLOCK_WORDS.quick, 'Quick trade');
     assert.equal(BLOCK_WORDS.rehome, 'Rehome only');
@@ -444,7 +450,7 @@ test('quick rows say what they allow and their value', () => {
     assert.deepEqual(quickOffers(null), []);
 });
 
-test('page report v2: the quick fields round trip with |, ",", % and long nested tokens', () => {
+test('page report v2: the quick fields encode |, ",", % and long nested tokens', () => {
     const store = {
         'hubAnimalsData/animalStorageData': { selectedAnimalIDs: ['animal_3'] },
         'hubAnimalsData/animalStorageData/actions': {
@@ -463,28 +469,26 @@ test('page report v2: the quick fields round trip with |, ",", % and long nested
     assert.ok(text.startsWith('v2|animal_3|animal_3|0|100,5000,812.5,1,12,6|'));
     // 18 fields: no raw "|" left inside one (the last, the page id, empty here)
     assert.equal(text.split('|').length, 18);
-    const d = decodeSeen(text);
-    assert.equal(d.v, 2);
-    assert.equal(d.reason, LONG + '\n');
-    assert.deepEqual(d.sel, ['animal_3']);
-    assert.equal(d.allowed, false);
-    assert.equal(d.limits.tradePriceDefault, 812.5);
-    assert.deepEqual(d.quick, {
-        quickTradeAllowed: true, quickTradeDisallowedReason: '', quickTradeValue: '$1,200',
-        quickReleaseAllowed: false, quickReleaseDisallowedReason: 'a|b,c%d 100% |x| é', quickReleaseValue: '85',
-        rehomeAllowed: false, quickTradePrice: 1200, quickReleasePrice: 85,
-    });
-    assert.deepEqual(d.net, { connecting: true, loading: false });
-    assert.equal(d.releaseable, false);
-    assert.equal(d.source, '[AnimalExchange_Source_Description:Value=|Wild, rescued|]');
+    const field = name => decodeURIComponent(seenField(text, name));
+    assert.equal(field('reason'), LONG + '\n');
+    assert.equal(field('selection'), 'animal_3');
+    assert.equal(field('allowed'), '0');
+    assert.equal(field('limits'), '100,5000,812.5,1,12,6');
+    assert.equal(field('quickTrade'), '1');
+    assert.equal(field('quickTradeReason'), '');
+    assert.equal(field('quickTradeValue'), '$1,200');
+    assert.equal(field('quickRelease'), '0');
+    assert.equal(field('quickReleaseReason'), 'a|b,c%d 100% |x| é');
+    assert.equal(field('quickReleaseValue'), '85');
+    assert.equal(field('rehome'), '0');
+    assert.equal(field('quickPrices'), '1200,85');
+    assert.equal(field('net'), '1,0');
+    assert.equal(field('releaseable'), '0');
+    assert.equal(field('source'), '[AnimalExchange_Source_Description:Value=|Wild, rescued|]');
     // nothing readable: every field still there, all unknown
     const empty = encodeSeen(readSeen('animal_3', () => { throw new Error('x'); }));
     assert.equal(empty, 'v2|animal_3|?|-|-,-,-,-,-,-||-|||-|||-|-,-|-,-|-||');
-    assert.equal(decodeSeen(empty).quick.quickTradeAllowed, null);
-    // v1 still decodes; junk does not
-    assert.equal(decodeSeen('v1|animal_3|animal_3|1|100,5000,812.5,1,12,6|[x|y]').reason, '[x|y]');
-    assert.equal(decodeSeen('v2|animal_3|x|1'), null);
-    assert.equal(decodeSeen('v3|a'), null);
+    assert.equal(empty.split('|').length, SEEN_FIELDS.length);
 });
 
 test('Check storage: the job, the animals it takes, the estimate, the summary', () => {
@@ -519,7 +523,7 @@ test('Check storage: the job, the animals it takes, the estimate, the summary', 
 // --------------------------------- Quick trade / release from the desk (Phase 2)
 // docs/PLAN-desk-quick-release.md 4
 import {
-    acceptedMode, encodeQuickJob, FIRST_TEXT, isFrontierZoo, quickEligible, QUICK_MODES, QUICK_WARNING, quickRunSummary, quickSheet,
+    acceptedMode, encodeQuickJob, FIRST_TEXT, quickEligible, QUICK_MODES, QUICK_WARNING, quickRunSummary, quickSheet,
 } from '../mods/PZ2QoL/UI/UIGameface/js/mods/pz2qol/listercore.js';
 
 const FZ = '[AnimalExchange_Source_Description:Value=|Frontier Zoo|]';
@@ -613,8 +617,8 @@ test('the sheet: go and skip lists, exact totals, the first-run limit, 12 names 
 test('the quick job is frozen to the rows given; summary and acceptance', () => {
     const out = quickRows();
     const job = encodeQuickJob([out[0], out[1]], { mode: 'release', paceMs: 200 });
-    assert.equal(job.text, 'v1 1000 release\n500 animal_1 - default\n501 animal_2 - default');
-    assert.equal(encodeQuickJob([out[0]], { mode: 'list' }).text, '');
+    assert.equal(job.text, 'v1 200 release\n500 animal_1 - default\n501 animal_2 - default');   // the engine keeps the 1 s floor
+    assert.equal(encodeQuickJob([out[0]], { mode: 'list', paceMs: 3000 }).text, '');
     const st = normalizeState({ run: 9, mode: 'quicktrade', phase: 'stopped', message: 'Stopped: page reloaded.', results: [
         { guid: '500', status: 'traded', price: 1200 }, { guid: '501', status: 'traded', price: 800 }, { guid: '502', status: 'unconfirmed', kind: 'unconfirmed' }, { guid: '503', status: 'pending' },
     ] });
@@ -629,7 +633,7 @@ test('the quick job is frozen to the rows given; summary and acceptance', () => 
     assert.equal(acceptedMode(normalizeState({ run: 12, mode: 'release', phase: 'running', results: [{ guid: '500', status: 'released' }] })), null);
     assert.equal(RESULT_WORDS.unconfirmed, 'not confirmed: check storage');
     // the page report carries this page's id (a quick run stops on another's)
-    assert.equal(decodeSeen(encodeSeen({ key: 'animal_1', sel: ['animal_1'], allowed: false, page: 'ab12c' })).page, 'ab12c');
+    assert.equal(seenField(encodeSeen({ key: 'animal_1', sel: ['animal_1'], allowed: false, page: 'ab12c' }), 'page'), 'ab12c');
 });
 
 // Quick trade is proven in game (Y: 2026-10-18): no one-animal limit for it;
@@ -662,7 +666,7 @@ import { normalizeRefused, refusedNote, REFUSED_OPTIONS } from '../mods/PZ2QoL/U
 
 test('When the server refuses a listing: the job option, the up-front note, the summary', () => {
     const rows = [{ guid: '11', key: 'animal_1', a: {}, advice: { price: 500 } }];
-    assert.equal(encodeJob(rows).text.split('\n')[0].split(' ').length, 2);
+    assert.equal(encodeJob(rows, { paceMs: 3000 }).text.split('\n')[0].split(' ').length, 2);
     assert.equal(encodeJob(rows, { paceMs: 3000, onRefused: 'leave' }).text.split('\n')[0], 'v1 3000');
     assert.equal(encodeJob(rows, { paceMs: 3000, onRefused: 'quicktrade' }).text.split('\n')[0], 'v1 3000 list onrefused=quicktrade');
     assert.equal(encodeJob(rows, { paceMs: 3000, onRefused: 'release', refusedMax: 1 }).text.split('\n')[0], 'v1 3000 list onrefused=release refusedmax=1');

@@ -6,7 +6,7 @@
 // half-sister of the chosen lion). Checks the counts line, the storage tags,
 // that the relative sits in the related section, the "Storage too" switch,
 // the error and offline states, one request per species, and the layout.
-import { seedZooKin } from './kin_fixture.mjs';
+import { seedZooKin, settleStoredAsks } from './kin_fixture.mjs';
 import { layoutFacts, layoutProblems } from './kin_planner.mjs';
 
 export const name = 'stored';
@@ -57,7 +57,6 @@ export async function hud(page, ctx) {
         const snap = JSON.parse(JSON.stringify(window.__kinFixture.snapshot));
         snap.mode = 'franchise';
         snap.seq = 501;
-        kin.applyKinSnapshot(snap);
         const STORED = {
             species: 'Lion',
             animals: [
@@ -82,7 +81,9 @@ export async function hud(page, ctx) {
                 engine.trigger('PZ2QoL_KinStoredChunk', reqId, 1, 2, json.slice(0, half));
             }, 300);
         });
+        kin.applyKinSnapshot(snap);
     }, { fatherGuid: 'g' + father.rowId });
+    await settleStoredAsks(page, 'Lion');
 
     try {
         // 1. the mate finder asks once, shows "Checking", then the stored adults
@@ -139,7 +140,8 @@ export async function hud(page, ctx) {
         facts.onAgainRows = await page.locator('.PZ2QoL_kp .PZ2QoL_kpMate.stored').count();
         facts.asks = await page.evaluate(() => window.__kst.asks.slice());
         if (facts.onAgainRows !== 3) problems.push(`switch on again: ${facts.onAgainRows} stored rows`);
-        if (facts.asks.length !== 1 || facts.asks[0] !== 'Lion') problems.push(`stored adults asked ${JSON.stringify(facts.asks)}, expected once for Lion`);
+        // the Market's fresh-blood check (marketmates.js) asks about the zoo's other species too
+        if (facts.asks.filter(sp => sp === 'Lion').length !== 1) problems.push(`stored adults asked ${JSON.stringify(facts.asks)}, expected once for Lion`);
 
         // 4. Lua says storage is not available: a quiet note, the zoo list as before
         await page.evaluate(async () => {
@@ -231,7 +233,7 @@ export async function hud(page, ctx) {
         if (!sashaRow) problems.push(`Compare Mates: no Sasha row: ${JSON.stringify(facts.compare)}`);
         else if (sashaRow.rel !== 'Half-sister' || sashaRow.sev !== 'risk') problems.push(`Compare Mates: stored half-sister badge ${sashaRow.rel}/${sashaRow.sev}`);
         if (nalaRow && nalaRow.rel) problems.push(`Compare Mates: the unrelated stored lioness got a badge: ${nalaRow.rel}`);
-        if (facts.compareAsks.join() !== 'Lion') problems.push(`Compare Mates asked for stored adults ${JSON.stringify(facts.compareAsks)}, expected once for Lion`);
+        if (facts.compareAsks.filter(sp => sp === 'Lion').length !== 1) problems.push(`Compare Mates asked for stored adults ${JSON.stringify(facts.compareAsks)}, expected once for Lion`);
         await page.evaluate(() => engine.trigger('PopupAction_SetDataCompareMates', null));
         await page.waitForTimeout(200);
     }

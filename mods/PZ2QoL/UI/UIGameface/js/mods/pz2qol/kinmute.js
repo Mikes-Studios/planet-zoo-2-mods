@@ -4,19 +4,13 @@
 // (userstore.js key 'kinMute' = { <species>: true }), like 'kinRatio'.
 import { getUserData, updateUserData, onUserData } from '/js/mods/pz2qol/userstore.js';
 import { breadcrumb } from '/js/mods/pz2qol/errors.js';
+import { callAll } from '/js/mods/pz2qol/storecore.js';
 
 const STORE = 'kinMute';
 const listeners = new Set();
 
 function notify() {
-    listeners.forEach(fn => {
-        try {
-            fn();
-        }
-        catch (e) {
-            // a listener must never break muting
-        }
-    });
+    callAll(listeners);
 }
 
 // the zoo's data arrived (another zoo, or the file after a click)

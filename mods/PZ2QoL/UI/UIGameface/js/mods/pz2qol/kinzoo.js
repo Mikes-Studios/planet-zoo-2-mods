@@ -6,7 +6,8 @@
 // gives it the per-animal data (zooKinInfo).
 import { getKinModel, getKinSettings, markKinActive } from '/js/mods/pz2qol/kin.js';
 import { animalPairs, habitatSummary, kinClusters } from '/js/mods/pz2qol/kincore.js';
-import { animalCardContent, habitatCardContent, visiblePairs, worstOfCounts } from '/js/mods/pz2qol/kinui.js';
+import { animalCardContent, habitatCardContent, visiblePairs } from '/js/mods/pz2qol/kinui.js';
+import { visibleCounts, worstOf } from '/js/mods/pz2qol/kinplannercore.js';
 import { badgeVNode, findVNode, hasClass, appendVNode, h, kinSlot, gameModule, isHudPage, patchRender, unwrap, unwrapUntil, dsValue } from '/js/mods/pz2qol/kinhooks.js';
 import { openKinPlanner } from '/js/mods/pz2qol/kinplanner.js';
 
@@ -85,11 +86,10 @@ function habitatBadge(model, rowId) {
     if (!m) return null;
     const s = habitatSummary(model, m[1]);
     if (!s) return null;
-    const counts = Object.assign({}, s.counts);
-    if (!getKinSettings().showCovered) counts.covered = 0;
-    const worst = worstOfCounts(counts);
+    const counts = visibleCounts(s.counts, getKinSettings().showCovered);
+    const worst = worstOf(counts);
     if (!worst) return null;
-    const n = counts.risk + counts.kin + counts.future + (counts.held || 0) + counts.covered;
+    const n = counts.risk + counts.kin + counts.future + counts.held + counts.covered;
     const build = pinned => habitatCardContent(model, m[1], { pinned, openPlanner: () => openKinPlanner({ habitatId: m[1] }) });
     return badgeVNode(worst, n, { host: 'inline habitats', build, title: '' });
 }

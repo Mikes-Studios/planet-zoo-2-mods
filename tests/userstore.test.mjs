@@ -165,9 +165,10 @@ test('the store not found yet (wait): changes are kept and saved once it answers
     const savanna = model('Savanna Hub', [['201', 'Plains'], ['202', 'Grassland']]);
     a.toggleAssignment(savanna, '202', 'Lion', 'Grassland');
     // the Lua side found the zoo and the player: it tells the page to read again
+    // ('data': the store's answer changed in the same park)
     fake.available = true;
     fake.reason = '';
-    (fake.handlers.get('PZ2QoL_StoreReset') || []).forEach(fn => fn());
+    (fake.handlers.get('PZ2QoL_StoreReset') || []).forEach(fn => fn('data'));
     await sleep(600);
     assert.equal(a.assignmentStorage(), 'file');
     assert.deepEqual(Array.from(a.getAssignments(savanna).keys()).sort(), ['201', '202']);
@@ -179,10 +180,10 @@ test("another zoo: the previous zoo's data is not carried into its store", async
     const a = await start();
     await sleep(50);
     assert.ok(a.getAssignments(model('Zoo A', [['1', 'Pen']])).has('1'));
-    // the next zoo's store is empty
+    // the next zoo's store is empty ('park': a park started)
     fake.file = '{}';
     const savesBefore = fake.saves;
-    (fake.handlers.get('PZ2QoL_StoreReset') || []).forEach(fn => fn());
+    (fake.handlers.get('PZ2QoL_StoreReset') || []).forEach(fn => fn('park'));
     await sleep(600);
     assert.equal(a.getAssignments(model('Zoo A', [['1', 'Pen']])).size, 0, "only the current zoo's data");
     assert.equal(fake.saves, savesBefore, 'nothing written to the new zoo');

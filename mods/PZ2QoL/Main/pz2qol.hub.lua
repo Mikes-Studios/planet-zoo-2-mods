@@ -40,10 +40,6 @@ end
 
 local ipairs = global.ipairs
 
-local function errors()
-	return global.package.loaded["pz2qol.errors"]
-end
-
 local function cp(sName)
 	local Core = global.package.loaded["pz2qol.core"]
 	if Core then
@@ -206,27 +202,6 @@ Hub.GetModUI = function(self)
 		end
 	end
 	return nil
-end
-
--- Used by Errors when the mod UI is not active.
-Hub.ShowFallbackDialog = function(self, tEntry)
-	local oHUD = self.oStartScreenHUD
-	if oHUD == nil or oHUD.RunPrompt == nil then
-		return
-	end
-	local function literal(s)
-		s = string.gsub(tostring(s), "[|%[%]{}]", " ")
-		return "[STRING_LITERAL:Value=|" .. s .. "|]"
-	end
-	pcall(function()
-		oHUD:RunPrompt({
-			header = literal(tEntry.sTitle),
-			label = literal(tEntry.sDetail),
-			headerIcon = "img/icons/IconWarning.svg",
-			bannerModifiers = "colorBackground warning",
-			items = { { id = "ok", label = "[MainMenu_ServerError_Ok]", inputName = "UI_Select" } },
-		})
-	end)
 end
 
 Hub._PatchFrontEndUI = function(self, FrontEndUI)
@@ -401,79 +376,68 @@ Hub._PatchHUDUI = function(self, HUDUI)
 	end
 end
 
+-- The page's greeting, and whether its detailed log is on (debug builds only).
+Hub._Greet = function(self, oUI)
+	local Core = self.Core
+	pcall(function()
+		oUI:TriggerEventAtNextAdvance("PZ2QoL_Hello", Core.sVersion)
+		oUI:TriggerEventAtNextAdvance("PZ2QoL_LogState", (Core.bTrace and not Core.bLogOff) and "on" or "off")
+		if Core.bTrace then
+			Core:Log("lua", "view_ready", { view = oUI == self.oFrontEndUI and "hub" or "hud", version = Core.sVersion })
+		end
+	end)
+end
+
 -- Runs inside the view's ready callback: keep it to non-blocking calls
 -- (no view creation/destruction here).
 Hub._OnModFrontEndReady = function(self, oUI)
 	self:_AddTraceListener(oUI)
-	if oUI == self.oFrontEndUI then
-		local MarketPeek = global.package.loaded["pz2qol.marketpeek"]
-		if MarketPeek then
-			pcall(MarketPeek.Attach, MarketPeek, oUI)
+	-- every feature's listeners, in Core's order (pz2qol.core.lua tFeatures)
+	local bHub = oUI == self.oFrontEndUI
+	local bGreeted = false
+	for _, tFeature in ipairs(self.Core.tAttach) do
+		if tFeature.bAfterHello and not bGreeted then
+			bGreeted = true
+			self:_Greet(oUI)
 		end
-		-- the Market desk's listing engine
-		local Lister = global.package.loaded["pz2qol.lister"]
-		if Lister then
-			pcall(Lister.Attach, Lister, oUI)
+		if tFeature.sView == nil or bHub then
+			pcall(tFeature.oModule.Attach, tFeature.oModule, oUI)
 		end
 	end
-	-- relatedness: the park (HUD) and Animal Storage (FrontEnd) both ask
-	local Kin = global.package.loaded["pz2qol.kin"]
-	if Kin then
-		pcall(Kin.Attach, Kin, oUI)
-	end
-	pcall(function()
-		local Core = global.package.loaded["pz2qol.core"]
-		oUI:TriggerEventAtNextAdvance("PZ2QoL_Hello", Core and Core.sVersion or "?")
-		-- the page's detailed log: on only in debug builds (debuglog.js)
-		oUI:TriggerEventAtNextAdvance("PZ2QoL_LogState", (Core and Core.bTrace and not Core.bLogOff) and "on" or "off")
-		if Core and Core.bTrace then
-			Core:Log("lua", "view_ready", { view = oUI == self.oFrontEndUI and "hub" or "hud", version = Core.sVersion })
-		end
-	end)
-	-- after the greeting: it sends its state straight away
-	local Autosave = global.package.loaded["pz2qol.autosave"]
-	if Autosave then
-		pcall(Autosave.Attach, Autosave, oUI)
-	end
-	-- stuck aquarium animals: the page sends the setting, Lua tells what it let out
-	local BoxRelease = global.package.loaded["pz2qol.boxrelease"]
-	if BoxRelease then
-		pcall(BoxRelease.Attach, BoxRelease, oUI)
-	end
-	-- "Find a habitat": the hub arms it, the park HUD places the animals
-	local StorageSend = global.package.loaded["pz2qol.storagesend"]
-	if StorageSend then
-		pcall(StorageSend.Attach, StorageSend, oUI)
-	end
-	-- trade shortcuts: the park opens the hub, the hub page filters storage
-	local CoreT = global.package.loaded["pz2qol.core"]
-	local TradeJump = (CoreT and CoreT.TradeJump) or global.package.loaded["pz2qol.tradejump"]
-	if TradeJump then
-		pcall(TradeJump.Attach, TradeJump, oUI)
-	end
-	-- "Bring to the trade centre": the park asks, the hub page sends
-	local StorageFetch = (CoreT and CoreT.StorageFetch) or global.package.loaded["pz2qol.storagefetch"]
-	if StorageFetch then
-		pcall(StorageFetch.Attach, StorageFetch, oUI)
-	end
-	-- the script profiler (off until the player starts it)
-	local Profiler = (CoreT and CoreT.Profiler) or global.package.loaded["pz2qol.profiler"]
-	if Profiler then
-		pcall(Profiler.Attach, Profiler, oUI)
+	if not bGreeted then
+		self:_Greet(oUI)
 	end
 	-- once per session: remove what the 2026-10-16 persistence probe left
 	-- in the player save (PZ2QoL.Probe and a 12 KB PZ2QoL.Big)
-	pcall(function()
-		local Core = global.package.loaded["pz2qol.core"]
-		local PlayerStore = (Core and Core.PlayerStore) or global.package.loaded["pz2qol.playerstore"]
-		if PlayerStore then
-			PlayerStore:Cleanup()
-		end
-	end)
-	local Errors = errors()
-	if Errors then
-		Errors:Flush()
+	if self.Core.PlayerStore then
+		pcall(self.Core.PlayerStore.Cleanup, self.Core.PlayerStore)
 	end
+	-- the errors kept while no mod page was up (the banner)
+	local Errors = global.package.loaded["pz2qol.errors"]
+	if Errors and Errors.Flush then
+		pcall(Errors.Flush, Errors)
+	end
+end
+
+-- Used by Errors when the mod UI is not active.
+Hub.ShowFallbackDialog = function(self, tEntry)
+	local oHUD = self.oStartScreenHUD
+	if oHUD == nil or oHUD.RunPrompt == nil then
+		return
+	end
+	local function literal(s)
+		s = string.gsub(tostring(s), "[|%[%]{}]", " ")
+		return "[STRING_LITERAL:Value=|" .. s .. "|]"
+	end
+	pcall(function()
+		oHUD:RunPrompt({
+			header = literal(tEntry.sTitle),
+			label = literal(tEntry.sDetail),
+			headerIcon = "img/icons/IconWarning.svg",
+			bannerModifiers = "colorBackground warning",
+			items = { { id = "ok", label = "[MainMenu_ServerError_Ok]", inputName = "UI_Select" } },
+		})
+	end)
 end
 
 Hub._PatchStartScreenHUD = function(self, StartScreenHUD)
@@ -534,6 +498,7 @@ Hub._PatchSaveAgent = function(self, SaveAgent)
 end
 
 Hub.Init = function(self, Core)
+	self.Core = Core
 	Core:AddModulePatch("Windows.SaveAgent", function(t) self:_PatchSaveAgent(t) end)
 	Core:AddModulePatch("UI.Controllers.FrontEndUI", function(t) self:_PatchFrontEndUI(t) end)
 	Core:AddModulePatch("UI.Controllers.HUDUI", function(t) self:_PatchHUDUI(t) end)

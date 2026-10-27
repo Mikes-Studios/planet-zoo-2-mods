@@ -15,8 +15,8 @@ What's in the toolbox:
 | Area | Tools |
 |---|---|
 | **Scores** | Gene, breeder and value badges on every Market and Storage row |
-| **Market** | Quick filters (Top genes, Breeders, Long-lived, Ending ≤1h, Cash, CC), Dim below a gene score |
-| **Animal Storage** | Filters (Pregnant, Alpha, Adults / Fertile adults / Juveniles, Sellable, Not listed, Has pair, Surplus, Gene ≥, Kin), lister on/off, sort by score, summary line, Find a habitat |
+| **Market** | Quick filters (Top genes, Breeders, Long-lived, Ending ≤1h, Cash, CC), Dim below a gene score, the juveniles each listing would give, Best buy and Best value per sex, Best to breed |
+| **Animal Storage** | Filters (Pregnant, Alpha, Adults / Fertile adults / Juveniles, Sellable, Sell advice, Not listed, Has pair, Surplus, Gene ≥, Kin), the juveniles each stored animal would give, lister on/off, sort by score, summary line, Find a habitat |
 | **Zoo Animals list** | Filter bar (habitat, sex, age, pregnant, alpha, contraception, unhappy, gene and fertility minimums, Kin) and sort by gene, breeder or welfare |
 | **Kin (inbreeding)** | Risk badges in every animal screen, alerts, Kin planner, Find a mate, Compare Mates and Genealogy additions, fertility over a life |
 | **Species board** | Plan moves by drag and drop, Suggest fixes, Breeding programme, Thin out, habitat assignments, Execute plan one move at a time, Auto mode per species |
@@ -27,9 +27,106 @@ What's in the toolbox:
 The mod never changes what is sent to Frontier's servers. Everything it does in Franchise goes
 through the game's own buttons and events and runs one action at a time. It starts only from your
 click, except Auto mode (only for the species you turned it on for) and letting out stuck aquarium
-animals (a setting, on by default).
+animals (a setting, on by default), and, if you turn them on in Kin settings, Auto mode for a species
+you set a habitat aside for, newborn names and boxing an overdue mother.
 
 ## Changelog
+
+### Unreleased
+
+**New features**
+
+- **Juveniles on the Market.** Each listing's badge shows the juveniles it would give with your breeders,
+  by the game's own gene model, and the best buy and best value of each sex are tagged across every
+  page. A male is scored by all your females; his badge names his best match where it differs.
+- **Juveniles in Animal Storage.** Your stored animals are scored the same way, so a stored breeder and
+  a Market one compare on one scale.
+- **Best to breed** (Market lister). One Market check of every breeding target, ranked by the CC a
+  breeding female earns a year at the asking prices of the moment. The Market shows asks, not sales,
+  and the card says so.
+- **Storage notices.** One notice per species for what Animal Storage holds that would breed better
+  than an animal in a habitat, or fill a missing partner, brought in with one approve (a listed
+  animal comes off the market first). Also young animals waiting in storage, which never grow up
+  there, and animals too old to trade, with Bring from storage.
+- **What a habitat needs.** A notice when a habitat has no partner to go on breeding, when growing
+  juveniles will need fresh blood, when a sire breeds well under the standard, and whether to keep or
+  sell a good breeder a better one replaces. Its Market button opens on the sex wanted, with the
+  listings whose juveniles fall short hidden.
+- **Missed notices.** A notice that goes by itself waits behind a round button in the corner.
+- **Sell advice** (Animal Storage). A chip for the animals the Breeding programme advises letting
+  go, cycled by how each can leave: the market, release or Quick trade. **Sellable** cycles every
+  stored animal the same three ways.
+- **Clean up** (Auto mode panel). Empties the habitats you tick for selling, or the whole zoo: the
+  adults go to the trade centre males first, a pregnant female after her birth and a young one once
+  grown. Elderly and hands-off animals stay and are named. Auto mode breeds on in the other habitats
+  and puts nothing into these, and once they are empty they are set aside for no species. The whole
+  zoo stops breeding everywhere.
+- **Breeding window: set up habitats.** It opens on the habitat on the game's info panel, or on a
+  list of every habitat (empty ones too) to tick, then the species that go there, several at once.
+  It searches every species the game knows.
+- **"releasable"** in the zoo's Animals search lists only the animals that can go to the wild, so a
+  habitat's or the zoo's can be ticked at once for release groups.
+- **Education screen.** The topics each species lacks, and **Fill topics** sets spare props to them.
+- **Overdue births** (off by default). A mother still pregnant at twice her species' pregnancy is
+  boxed and let out in place, which makes her give birth.
+- **Newborn names** (off by default). Each newborn gets a unique name from famous people, from the
+  name groups you pick.
+- **One settings page.** Every Kin setting on one page in sections, also from a **Settings** button
+  on the park dock.
+- **Error banner switch.** The mod's errors on screen can be turned off; every error is still kept.
+
+**Changes**
+
+- **Breeding programme.** A pair is worth its expected juveniles times the game's conception chance
+  times the years both can still breed, and animals rank by the juveniles they give. A breeder whose
+  juveniles fall well below the best pair's waits at the trade centre, keeping one of each sex per
+  habitat set aside. Every habitat set aside gets a breeding pair while the breeders allow one.
+- **Never inbreed.** Relatives of the other sex never share a habitat in any plan, and the game's
+  most adults per sex is a hard limit. The "Related pairs together" tuning is gone.
+- **The park's own rules.** Franchise and Career zoos keep the game's group and room rules in full.
+  In a sandbox park with social groups off, a habitat breeds through one male; with overcrowding
+  off, habitats have no room limit.
+- **Juveniles grow up in a habitat.** Nothing moves a juvenile before it has grown up, and
+  juveniles waiting at the trade centre always go back to a habitat.
+- **Auto mode** runs a species as soon as relatives share a habitat or one of its young grows up,
+  keeps the last breeder of a sex unless it would live beside a relative, and weighs a breeder
+  parked at the trade centre again once its herd changes. It decides for its species: an animal you
+  move stays where you put it for the rest of that run, and **Auto mode: hands off** keeps one for
+  good.
+- **Suggest fixes** counts the breeders with an unrelated partner, so it parts relatives in a
+  crowded group too, and it never moves a juvenile.
+- **Market lister.** It never lists an elderly animal or one within three years of elderly (the
+  server refuses them, and a refused listing can take the game down). It lists at the price you
+  saw, and a reason the game gives that never passes (no birth zoo) takes the run's If refused
+  action at once.
+- **Animal Storage.** The Adults chip holds one stage (all, fertile, juvenile), and a hidden row
+  never stays ticked. The mod's toolbars and panels step aside for the game's tooltips, menus and
+  windows.
+- **Notices** from the boxes, quarantine and Auto mode follow your pop-up level; the answer to a
+  notice's button always shows.
+- **Kin settings** are kept in your player settings across sessions.
+
+**Fixes**
+
+- A habitat built in the last 30 seconds is asked about instead of taken as unsuitable for every
+  species, so the board, the Breeding programme and Suggest fixes can use it at once.
+- The counts behind Bring to the trade centre leave out stored animals listed on the market.
+
+**Settings**
+
+New Kin settings and their defaults:
+
+| Setting | Section | Default |
+|---|---|---|
+| Habitat set aside turns Auto on | Auto mode | off |
+| Breeders to storage before elderly | Auto mode | off |
+| Bring waiting animals into a habitat | Auto mode | off |
+| Contraception near a relative | Auto mode | off |
+| Change juvenile names automatically (and its name groups) | Names | off |
+| Box Animal on an overdue mother | Transport boxes | off |
+| Warn four years before elderly | Alerts | off |
+| Animals to bring out of storage | Alerts | on |
+| The mod's errors on screen | Alerts | on |
 
 ### 3.2.1
 
@@ -445,7 +542,8 @@ animals (a setting, on by default).
 - UI script errors and failed UI requests.
 - **Stuck spinners**: anything still loading after 20 s, with the last server error if there was one.
 
-Click **Details** for the last 50 entries.
+Click **Details** for the last 50 entries. Kin settings > **The mod's errors on screen** turns the
+banner off; every error is still kept.
 
 **Market lister** (Franchise only; **on by default**; turn it off with the **Lister** chip in the
 storage toolbar; listing only starts when you click **Sell**):
@@ -524,6 +622,8 @@ storage toolbar; listing only starts when you click **Sell**):
 - **Sort** by gene score, breeder score or welfare.
 - **Kin** filter and the **Planner**, **Board** and **Heat** buttons (see Kin below), and **Clear**.
 - Select all only selects the animals you can see.
+- Type **releasable** in the species search to list only the animals that can go to the wild, so a
+  habitat's or the zoo's can be ticked at once for release groups.
 
 **Find a habitat** (Animal Storage): a button under the game's own **Send to Zoo**. One click sends
 the selection to the zoo with the game's Send to Zoo, then, back in the park, places each animal
@@ -531,17 +631,17 @@ in a habitat that suits it (the game's own habitat rules, reachable by keepers),
 time, instead of the game's single destination for all of them. Works with select all and the
 storage filters, Franchise included.
 
-**Park launcher:** two round buttons on top of the game's tools column (bottom left, above Paths,
-Barriers, Terrain): the **Species board** in one click, and **Autosave**, which shows when the next
-save is due.
+**Park launcher:** round buttons on top of the game's tools column (bottom left, above Paths,
+Barriers, Terrain): **Settings** (every Kin setting), **Autosave**, which shows when the next save is
+due, the **Species board** and the **Breeding programme** (the Breeding window), each in one click.
 
 **Autosave:** the game restarts its 10-minute autosave timer after every trip to the hub, so
 players who go back and forth often get none. The mod keeps its own clock of park time that
 survives hub trips and asks the game for its normal autosave: Off (game default) / 2 / 3 / 5 /
 10 minutes, plus **Save now**. The setting resets each time the game starts.
 
-**Pause sliders:** the pause between Market lister listings and between Species board moves,
-1–10 s each. Every step still waits for the game to confirm it.
+**Pause sliders:** the pause between Market lister listings (1–10 s) and between moves
+(0.5–10 s). Every step still waits for the game to confirm it.
 
 **Crash guard:** the game's own Move screen could crash when the animal it had selected was gone
 (a stale selection); the mod catches that and the game shows "Move failed" instead.
@@ -569,7 +669,7 @@ which male and female in the same habitat are related and would inbreed. Collect
   more", or "for life" for species that never age out), its **last fertile years** (a "2y
   fertile" tag), **too old to breed**, or infertile, from the game's own age group (elderly) and
   the species' fertility ages. Too old animals are never counted as breeders; Suggest fixes counts
-  a pair in its last fertile years as half a pair, Find a mate lists animals that can breed first,
+  a breeder in its last fertile years as half, Find a mate lists animals that can breed first,
   and the Breeding programme weighs each pair by how long it can still breed.
 - **Zoo management, Animals list:** a DNA badge on every animal that has a relative to breed with
   in its habitat. Hover it to see who and how ("Zuri ♀, half-sister, 12.5% kinship, mates now"),
@@ -597,7 +697,8 @@ which male and female in the same habitat are related and would inbreed. Collect
     where they live, and **Storage** / **Market** buttons that open the hub for that species. In a
     Franchise zoo it also lists the adults in your own Animal Storage (**Storage too** switch),
     tagged **storage**.
-  - **Settings:** alerts on/off, alerts for close kin too, **animals growing up** (off by
+  - **Settings:** every Kin setting on one page in sections, also opened from the dock's
+    **Settings** button: alerts on/off, alerts for close kin too, **animals growing up** (off by
     default), **pop up for** (Needs you only, the default, or Heads-up too), the muted species (click one to
     unmute it), show covered pairs, **pair bonds count
     as protection** (on by default; off shows every bonded related pair as a risk, as before), and
@@ -621,8 +722,9 @@ which male and female in the same habitat are related and would inbreed. Collect
   its relatives across the board. Drag animals (or select them and click a column) to **stage moves into a plan**: the
   plan shows its effect before anything happens ("fixes 3 inbreeding risks, creates 0"), and
   **Suggest fixes** proposes the fewest moves that clear a species' risks while keeping animals
-  able to breed: it counts fertile, unrelated male–female pairs (no contraception, not infertile),
-  never takes a habitat's last breeding pair, and avoids groups of only males or only females.
+  able to breed: it counts the breeders with a fertile, unrelated partner (no contraception, not
+  infertile), never takes a habitat's last breeding pair, never moves a juvenile, and avoids groups
+  of only males or only females.
   The header shows the species' adults in your Animal Storage and has **Storage** and **Market**
   buttons that open the hub filtered to the species (the board closes). In a Franchise zoo the
   trade-centre column also lists those stored adults (read-only, with kin badges; stored young
@@ -630,7 +732,11 @@ which male and female in the same habitat are related and would inbreed. Collect
   game's own and stays set afterwards, as after the game's Zoopedia button.
 - **Breeding programme** (Species board, next to Suggest fixes): plans the best layout of a
   species' breeders for **genetics**: expected young (the game's gene formula) × the chance of
-  conception (the game's own probability). It follows the species' **group make-up** (pairs; one
+  conception (the game's own probability) × the years both can still breed. Animals rank by the
+  juveniles they give, and every habitat set aside gets a breeding pair while the breeders allow one.
+  Franchise and Career zoos keep the game's group and room rules in full; in a sandbox park with
+  social groups off a habitat breeds through one male, and with overcrowding off it has no room
+  limit. It follows the species' **group make-up** (pairs; one
   male with 2 to 5 females; a harem: one breeding male per habitat; the reverse; mixed groups),
   taken from the game's social groups and mating system, or your own choice with the **Make-up**
   arrows (kept per species for this zoo). It fills each habitat towards that make-up from the trade
@@ -714,14 +820,18 @@ which male and female in the same habitat are related and would inbreed. Collect
   centre count (off by default).
 - **Read-only and safe:** Kin only reads. The only things it changes are the ones you click, one
   animal per click, through the same calls the game's own buttons make (contraception, camera).
-  Auto mode (below) is the one exception, and only for the species you turned it on for.
+  Auto mode (below) is the exception, only for the species you turned it on for, and so are the
+  Kin settings that say they act by themselves (newborn names, boxing an overdue mother), all off by
+  default.
 - **Stuck aquarium animals** (on by default): the game sometimes boxes an aquarium animal while it
   swims and never unboxes it. After 20 seconds of game time (4 real seconds at 5x; nothing while
   paused) the mod unboxes it, one animal at a time, with the same calls as the game's Unbox button
   (only animals no keeper, move or game action is working on). No notice for that; if the game
   boxes the same animal again three times right after, the mod leaves it for 10 minutes of game
   time and shows a **Needs you** note with **Locate**. Kin settings >
-  **Let out stuck aquarium animals** turns it off.
+  **Let out stuck aquarium animals** turns it off. **Box Animal on an overdue mother** (off by
+  default) boxes and lets out a mother still pregnant at twice her species' pregnancy, which makes
+  her give birth.
 
 ### Auto mode (per species, off by default)
 
@@ -743,6 +853,9 @@ you turn it on for that species, in that zoo. Off, the board works exactly as be
     trade centre may join a group.
   - **Thin out** (on by default): first send what is over each habitat's room to the trade centre,
     the old and infertile first (fill level: Core only, Strict, Lean, Balanced, Full).
+- **Kin settings** (Auto mode, all off by default): **Habitat set aside turns Auto on**, **Sell
+  breeders before elderly**, **Bring waiting animals into a habitat** (pregnant females and animals
+  too old to trade; young always go back to a habitat) and **Contraception near a relative**.
 - **Each run:** Thin out (if on), then the Breeding programme on the zoo as Thin out leaves it.
   Then the moves, one at a time like Execute, each confirmed by the game and skipped if the game
   refuses it. A run with nothing to do just waits for the next one. **Run now** runs it at once.
@@ -753,11 +866,15 @@ you turn it on for that species, in that zoo. Off, the board works exactly as be
   animals** in the panel (for all zoos) to get a short notice after each run that moved
   animals.
 - **It never:** sells, releases, buys or lists animals (the trade centre is where it sends them;
-  you sell or release them as before); moves pregnant females, young (Thin out), animals on the
-  move, or animals you marked **Auto mode: hands off** (an animal card's menu); brings back an
-  animal it sent to the trade centre.
+  you sell or release them as before); moves a pregnant female (except out of the trade centre into
+  a habitat, with **Bring waiting animals into a habitat**), a young animal (except back to a habitat
+  from the trade centre), animals on the move, or animals you marked **Auto mode: hands off** (an
+  animal card's menu); brings back an animal it sent to the trade centre, unless its herd changes
+  (a birth, an arrival, a young one grown up) and gives it a place.
 - **You stay in charge:**
-  - An animal **you** move is left where you put it for two game years.
+  - An animal **you** move during a run is left where you put it for the rest of that run;
+    otherwise Auto mode decides for its species. **Auto mode: hands off** keeps an animal where it
+    is.
   - While you work on that species on the board (a staged plan with its animals, its Breeding
     programme or Thin out, a drag, a Move now), Auto mode waits.
   - If it would move an animal back where it just came from twice, it stops for that species and

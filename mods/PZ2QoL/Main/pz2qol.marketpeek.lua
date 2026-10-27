@@ -152,6 +152,11 @@ MarketPeek.Page = function(self, nPage)
 	if tPeek.sState ~= "ready" then
 		return self:_Send("busy", "The previous page is still loading.")
 	end
+	-- one server action at a time: a listing run may be waiting for its confirm
+	local Lister = global.package.loaded["pz2qol.lister"]
+	if type(Lister) == "table" and Lister.tRun ~= nil then
+		return self:_Send("busy", "a listing run is going; check prices again when it is done")
+	end
 	nPage = global.tonumber(nPage)
 	if nPage == nil or nPage < 1 or nPage >= self.nMaxPages or nPage ~= global.math.floor(nPage) then
 		return self:_Send("failed", "Bad market page " .. tostring(nPage) .. ".")
@@ -256,28 +261,6 @@ MarketPeek.GetFranchise = function(self)
 	return tAPIs and tAPIs.franchise or nil
 end
 
--- Answers PZ2QoL_DbQuery with PZ2QoL_DbState(bKnown, bBusy, nRequestType):
--- whether the game is still waiting on a franchise server request (its own
--- IsDatabaseOperationInProgress). The lister asks before every listing.
-MarketPeek.DbQuery = function(self)
-	local bKnown, bBusy, nType = false, false, -1
-	local franchise = self:GetFranchise()
-	if franchise ~= nil then
-		local bOk, b, n = pcall(function() return franchise:IsDatabaseOperationInProgress() end)
-		if bOk then
-			bKnown = true
-			bBusy = b == true
-			nType = type(n) == "number" and n or -1
-		end
-	end
-	local Hub = global.package.loaded["pz2qol.hub"]
-	local oUI = Hub and Hub.bFrontEndIsModded and Hub.oFrontEndUI or nil
-	log("dbstate", { known = bKnown, busy = bBusy, req = nType })
-	if oUI ~= nil then
-		pcall(oUI.TriggerEventAtNextAdvance, oUI, "PZ2QoL_DbState", bKnown, bBusy, nType)
-	end
-end
-
 -- JS -> Lua events on the hub page. Registered from the view's ready
 -- callback (registering earlier is silently dropped).
 MarketPeek.Attach = function(self, oUI)
@@ -305,9 +288,6 @@ MarketPeek.Attach = function(self, oUI)
 		end, self)
 		oUI:AddEventListener("PZ2QoL_MarketPeekRelease", 0, function()
 			pcall(self.Release, self)
-		end, self)
-		oUI:AddEventListener("PZ2QoL_DbQuery", 0, function()
-			pcall(self.DbQuery, self)
 		end, self)
 	end)
 	if not bOk then

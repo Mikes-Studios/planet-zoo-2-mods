@@ -35,7 +35,14 @@
 --  nothing happens while paused. Real-time floors (nMinScanReal,
 --  nMinGapReal) keep scans and releases spaced at top speed.
 --
---  JS -> Lua  PZ2QoL_ReleaseSet(bOn)
+--  An overdue mother (the page's kinbirth.js: still pregnant at twice her
+--  species' pregnancy) gives birth once she is boxed and unboxed in place,
+--  as the player would: Rebox boxes her (Kin setting overdueBox, off by
+--  default) and the scan lets her out like a stuck animal, once per
+--  pregnancy, whatever the aquarium setting.
+--
+--  JS -> Lua  PZ2QoL_ReleaseSet(bOn), PZ2QoL_ReleaseOverdue(bOn),
+--             PZ2QoL_Rebox(sId)   an overdue mother's entity id
 --  Lua -> JS  PZ2QoL_ReleaseEvent(sKind, nId, sSpecies, nCount)
 --             sKind "gaveup" only (a release itself shows nothing)
 -----------------------------------------------------------------------
@@ -48,11 +55,14 @@ local pairs    = global.pairs
 local ipairs   = global.ipairs
 local math     = global.math
 local table    = global.table
+local next     = global.next
+local tonumber = global.tonumber
 
 local BoxRelease = module(...)
 
 -- game seconds (seconds at 1x speed)
 BoxRelease.bOn = true
+BoxRelease.bOverdue = false
 BoxRelease.nScanSeconds = 2
 BoxRelease.nWaitSeconds = 20    -- stuck this long before the mod lets it out
 BoxRelease.nGapSeconds = 2      -- between two releases
@@ -66,6 +76,7 @@ BoxRelease.nMinGapReal = 0.5
 BoxRelease.tStuck = {}     -- e -> first game time seen stuck (cleared when not)
 BoxRelease.tHistory = {}   -- e -> { at = last release, quick = n, restUntil = t } (game time)
 BoxRelease.tViews = {}
+BoxRelease.tRebox = {}     -- e -> true: boxed by Rebox, for the scan to let out
 BoxRelease.oClock = nil    -- PZ2QoL.GameClock (Init)
 BoxRelease.sClockSource = nil
 BoxRelease.nLastScan = -1e9
@@ -127,7 +138,8 @@ BoxRelease._IsStuck = function(self, animals, e, bAquarium)
 	if call(animals, "IsAnimalBoxed", e) ~= true then
 		return false
 	end
-	if not bAquarium and call(animals, "DoesAnimalDeepSwim", e) ~= true then
+	-- a mother Rebox boxed is let out whatever the aquarium setting
+	if self.tRebox[e] ~= true and (not self.bOn or (not bAquarium and call(animals, "DoesAnimalDeepSwim", e) ~= true)) then
 		return false
 	end
 	if call(animals, "IsBoxingClaimed", e) == true
@@ -155,6 +167,11 @@ BoxRelease._Release = function(self, animals, e, sSpecies, nNow)
 		pcall(animals.ReleaseBoxing, animals, e)
 		self:_Log("unbox_failed", { e = e, species = sSpecies })
 		return false
+	end
+	if self.tRebox[e] then
+		self.tRebox[e] = nil
+		self:_Log("overdue_unboxed", { e = e, species = sSpecies })
+		return true
 	end
 	local tHist = self.tHistory[e] or { quick = 0 }
 	self.tHistory[e] = tHist
@@ -263,7 +280,7 @@ end
 -- (SelectMode, with the frame's scaled delta for the clock). Both may run
 -- in one frame; the clock and the scan are gated by time, not calls.
 BoxRelease.Tick = function(self, nDelta, sSrc)
-	if not self.bOn or self.oClock == nil or self:_StartScreenUp() then
+	if not (self.bOn or next(self.tRebox) ~= nil) or self.oClock == nil or self:_StartScreenUp() then
 		return
 	end
 	if sSrc == "world" and self.bWorldActive == false then
@@ -349,6 +366,7 @@ end
 BoxRelease.Set = function(self, bOn)
 	self.bOn = bOn ~= false
 	self.tStuck = {}
+	self.tRebox = {}
 	self.tHistory = {}
 	self.tTicked = {}
 	self.bWorldActive = nil
@@ -359,6 +377,41 @@ BoxRelease.Set = function(self, bOn)
 	self:_Log("set", { on = self.bOn })
 end
 
+BoxRelease.SetOverdue = function(self, bOn)
+	self.bOverdue = bOn == true
+	self:_Log("overdue_set", { on = self.bOverdue })
+end
+
+-- Box Animal on a habitat animal (the info panel's button), for the scan
+-- to let out in place. -> true, or false + why
+BoxRelease.Rebox = function(self, sId)
+	if not self.bOverdue then
+		return false, "switched off"
+	end
+	if self:_StartScreenUp() then
+		return false, "no park"
+	end
+	local e = tonumber(sId)
+	local bOk, tAPIs = pcall(function() return api.world.GetWorldAPIs() end)
+	local animals = bOk and type(tAPIs) == "table" and tAPIs.animals or nil
+	if e == nil or animals == nil then
+		return false, "no habitat animal " .. tostring(sId)
+	end
+	if call(animals, "IsAnimalBoxableByPlayer", e) ~= true then
+		return false, "the game doesn't allow boxing it now"
+	end
+	if call(animals, "ClaimBoxing", e) ~= true then
+		return false, "box is busy (claim refused)"
+	end
+	local bBoxed = pcall(animals.BoxAnimal, animals, e)
+	if not bBoxed then
+		pcall(animals.ReleaseBoxing, animals, e)
+		return false, "box failed"
+	end
+	self.tRebox[e] = true
+	return true
+end
+
 BoxRelease.Attach = function(self, oUI)
 	if oUI == nil or self.tViews[oUI] then
 		return
@@ -367,6 +420,14 @@ BoxRelease.Attach = function(self, oUI)
 	pcall(function()
 		oUI:AddEventListener("PZ2QoL_ReleaseSet", 1, function(_, bOn)
 			pcall(self.Set, self, bOn)
+		end, self)
+		oUI:AddEventListener("PZ2QoL_ReleaseOverdue", 1, function(_, bOn)
+			pcall(self.SetOverdue, self, bOn)
+		end, self)
+		oUI:AddEventListener("PZ2QoL_Rebox", 1, function(_, sId)
+			local bOk, bBoxed, sWhy = pcall(self.Rebox, self, sId)
+			self:_Mark((bOk and bBoxed) and "release_overdue_boxed" or "release_overdue_not_boxed")
+			self:_Log("overdue_rebox", { e = tostring(sId), boxed = bOk and bBoxed == true, why = bOk and sWhy or tostring(bBoxed) })
 		end, self)
 	end)
 end

@@ -1,5 +1,5 @@
-// Market desk: the page side of the Lua listing engine (Main/pz2qol.lister.lua,
-// docs/DESIGN-market-desk.md). The engine runs inside Animal Storage, works
+// Market desk: the page side of the Lua listing engine (Main/pz2qol.lister.lua).
+// The engine runs inside Animal Storage, works
 // on animal GUIDs and calls the game's own listing function; this module
 // asks what it can do, turns storage row keys into GUIDs, starts and stops
 // runs, and keeps the engine's latest state for the panels.
@@ -7,6 +7,7 @@ import { breadcrumb } from '/js/mods/pz2qol/errors.js';
 import { dlog } from '/js/mods/pz2qol/debuglog.js';
 import { encodeSeen, normalizeState, readSeen } from '/js/mods/pz2qol/listercore.js';
 import { get } from '/js/mods/pz2qol/game.js';
+import { callAll } from '/js/mods/pz2qol/storecore.js';
 
 const ANSWER_TIMEOUT_MS = 2500;
 const CAPS_MAX_AGE_MS = 4000;
@@ -83,6 +84,11 @@ function install() {
     engine.on('PZ2QoL_ListerState', json => {
         const s = normalizeState(parse(json));
         if (!s) return;
+        // the engine sends each verdict once: the run's later states carry null for it
+        if (state && state.run === s.run) s.results.forEach((r, i) => {
+            const before = state.results[i];
+            if (r.verdict == null && before && before.guid === r.guid) r.verdict = before.verdict;
+        });
         logState(s);
         // a refused start (another run, storage closed) keeps the run shown
         if (!s.refused) state = s;
@@ -150,14 +156,7 @@ function reportSeen() {
 }
 
 function notify(s = state) {
-    listeners.forEach(fn => {
-        try {
-            fn(s);
-        }
-        catch (e) {
-            // a listener never breaks the engine view
-        }
-    });
+    callAll(listeners, s);
 }
 
 function ask(event, args, timeoutMs = ANSWER_TIMEOUT_MS) {
@@ -185,7 +184,7 @@ function ask(event, args, timeoutMs = ANSWER_TIMEOUT_MS) {
 }
 
 // What the Lua side can do: { ok, missing, storage, online, rows, running }
-// or { ok: false, reason: 'noanswer' } (an older Main.ovl, or no storage).
+// or { ok: false, reason: 'noanswer' } (no answer in time, e.g. storage still loading).
 // maxAgeMs: an answer younger than this is used as it is.
 export function engineCaps({ force = false, maxAgeMs = CAPS_MAX_AGE_MS } = {}) {
     if (!force && caps && Date.now() - capsAt < maxAgeMs) return Promise.resolve(caps);
@@ -206,7 +205,7 @@ export function engineCaps({ force = false, maxAgeMs = CAPS_MAX_AGE_MS } = {}) {
 // The game's own storage filters while the desk is open (pz2qol.lister.lua
 // DeskFilters): 'clear' (kept, then reset as the game's Reset all filters
 // does) or 'restore' (put back; after a run if one is going). Resolves
-// { ok, cleared, detail } or null (no answer: an older Main.ovl).
+// { ok, cleared, detail } or null (no answer in time).
 export function deskFilters(action) {
     breadcrumb(`desk_filters_${action}`);
     dlog('desk', 'filters_ask', { action });
@@ -234,10 +233,10 @@ export function engineUsable(c, pageRows = 0) {
 }
 
 export function engineWhyNot(c, pageRows = 0) {
-    if (!c || c.reason === 'noanswer') return "The mod's game-side listing engine did not answer (an older Main.ovl?).";
-    if (Array.isArray(c.missing) && c.missing.length) return `This game version lacks ${c.missing.join(', ')}.`;
+    if (!c || c.reason === 'noanswer') return "The mod's game-side listing engine did not answer in time (Animal Storage may still be loading).";
+    if (Array.isArray(c.missing) && c.missing.length) return `This game version lacks ${c.missing.join(', ')}, which the listing engine calls.`;
     if (c.storage === false) return 'Animal Storage is not open on the game side.';
-    if (pageRows > 0 && !(c.rows > 0)) return "The game-side engine cannot read the storage list.";
+    if (pageRows > 0 && !(c.rows > 0)) return 'The game-side engine cannot read the storage list yet (it may still be loading).';
     return '';
 }
 
@@ -246,8 +245,10 @@ export function engineWhyNot(c, pageRows = 0) {
 // what each row held when it read the GUID; a GUID is kept only if that is
 // still the animal the page read (else the list changed in between).
 // rows: [{ key, fp, name, species, gender }]. Returns Map key -> guid, with
-// .failed: Set of the keys Lua answered for and could not identify (the
-// desk blocks them 'noid').
+// .failed: Set of the keys Lua answered for and could not identify, or
+// identified as another animal than the page's row (the desk blocks them
+// 'noid'), and .unanswered: Set of the keys in batches Lua did not answer in
+// time (unblocked; asked again next time).
 // Back-off (in game 2026-10-18 the desk asked the same 59 failing keys every
 // second for 10 minutes): a failed key is asked again only when its row
 // changed, after a growing wait (5 s doubling to 2 min), or with
@@ -259,6 +260,15 @@ export async function resolveGuids(rows, opts = {}) {
     const now = Date.now();
     const out = new Map();
     out.failed = new Set();
+    out.unanswered = new Set();
+    const markFailed = r => {
+        const f = failCache.get(r.key);
+        const wait = f && f.fp === r.fp ? Math.min(RESOLVE_BACKOFF_MAX_MS, f.wait * 2) : RESOLVE_BACKOFF_MS;
+        failCache.set(r.key, { fp: r.fp, wait, next: Date.now() + wait });
+        // an id it had before no longer counts
+        guidCache.delete(r.key);
+        out.failed.add(r.key);
+    };
     const need = [];
     let backedOff = 0;
     for (const r of rows) {
@@ -281,8 +291,10 @@ export async function resolveGuids(rows, opts = {}) {
         const ans = await ask('PZ2QoL_ListerResolve', [batch.map(r => r.key).join(',')]);
         const ids = ans && ans.ids && typeof ans.ids === 'object' ? ans.ids : null;
         if (!ids) {
+            // the later batches are still asked; these keys stay unblocked
             log.noanswer += batch.length;
-            break;
+            for (const r of batch) out.unanswered.add(r.key);
+            continue;
         }
         if (Array.isArray(ans.failed)) log.failed += ans.failed.length;
         const held = ans.rows && typeof ans.rows === 'object' ? ans.rows : {};
@@ -291,18 +303,14 @@ export async function resolveGuids(rows, opts = {}) {
             const g = ids[r.key];
             if (g == undefined || g === '') {
                 // answered without an id: blocked until it is asked again
-                const f = failCache.get(r.key);
-                const wait = f && f.fp === r.fp ? Math.min(RESOLVE_BACKOFF_MAX_MS, f.wait * 2) : RESOLVE_BACKOFF_MS;
-                failCache.set(r.key, { fp: r.fp, wait, next: Date.now() + wait });
-                // an id it had before no longer counts
-                guidCache.delete(r.key);
-                out.failed.add(r.key);
+                markFailed(r);
                 continue;
             }
             const h = held[r.key];
             if (!h || h.name !== r.name || h.species !== r.species || Number(h.gender) !== Number(r.gender)) {
+                // Lua read another animal at this key (the list changed in between)
                 breadcrumb('lister_resolve_mismatch');
-                guidCache.delete(r.key);
+                markFailed(r);
                 log.mismatch++;
                 if (log.mismatchKeys.length < 8) log.mismatchKeys.push(r.key);
                 continue;
@@ -351,7 +359,7 @@ export function startEngineRun(text) {
             dlog('lister', 'engine_started', { req, ok, run: s.run, msg: ok ? undefined : s.message });
             resolve({ ok, req, message: ok ? '' : s.message || 'The engine refused the run.' });
         });
-        // No answer in time does not mean it did not start (review 2026-10-18):
+        // No answer in time does not mean it did not start:
         // say so, and keep listening; the next state for this request id
         // settles it (logged as engine_started_late; the run card shows it).
         const timer = setTimeout(() => {
@@ -397,9 +405,9 @@ export function stopEngineRun() {
 
 export function setEnginePace(ms) {
     install();
-    dlog('lister', 'engine_pace', { ms: Math.max(1000, Math.round(ms)) });
+    dlog('lister', 'engine_pace', { ms: Math.round(ms) });
     try {
-        engine.trigger('PZ2QoL_ListerPace', Math.max(1000, Math.round(ms)));
+        engine.trigger('PZ2QoL_ListerPace', Math.round(ms));
     }
     catch (e) {
         // applied to the next run
@@ -433,6 +441,7 @@ export function _resetEngineForTests() {
     state = null;
     ownRuns = new Set();
     guidCache.clear();
+    failCache.clear();
     waiters.clear();
     stopWatch(true);
     logged = { sig: '', results: new Map() };

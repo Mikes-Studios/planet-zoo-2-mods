@@ -16,14 +16,18 @@
 --  Animal Storage has no pending species filter in the game, so for
 --  Storage the species is kept here and handed to the hub page, which
 --  filters the list itself (a mod chip, bars.js):
---    JS -> Lua  PZ2QoL_TradeOpen(req, kind, species) -> PZ2QoL_TradeOpenResult(req, ok, detail)
+--    JS -> Lua  PZ2QoL_TradeOpen(req, kind, species, extra) -> PZ2QoL_TradeOpenResult(req, ok, detail)
+--               extra (Market, from a needs notice): "sex=f;dim=48", the sex
+--               wanted and the gene score to dim listings below, handed to
+--               the hub page like the Storage species
 --    JS -> Lua  PZ2QoL_TradeCounts(req, csv) -> PZ2QoL_TradeCountsResult(req, json)
 --    JS -> Lua  PZ2QoL_TradeHello()            (hub page, on load / storage shown)
---    Lua -> JS  PZ2QoL_TradeFilter(seq, "storage", species)   until
+--    Lua -> JS  PZ2QoL_TradeFilter(seq, kind, species, extra)   until
 --    JS -> Lua  PZ2QoL_TradeAck(seq)
 --  Counts: api.planetHub.GetAdultsOfSpeciesInStorageSplitByGender(sSpecies)
 --  -> { [1] = male GUIDs, [2] = female GUIDs } (adults only; the game calls
---  it from the park's Compare Mates in Franchise).
+--  it from the park's Compare Mates in Franchise), less the ones listed on
+--  the market.
 --  Nothing here talks to Frontier's servers beyond what opening the hub
 --  with the game's own button does. Fail soft: every call in pcall.
 -----------------------------------------------------------------------
@@ -35,13 +39,14 @@ local tonumber = global.tonumber
 local type     = global.type
 local pairs    = global.pairs
 local string   = global.string
-local table    = global.table
+local Handover  = global.require("PZ2QoL.Handover")
+local ParkReads = global.require("PZ2QoL.ParkReads")
 
 local TradeJump = module(...)
 
 TradeJump.nPendingSeconds = 600 -- a storage filter older than this is dropped
 TradeJump.nMaxSpecies = 40
-TradeJump.tPending = nil        -- { nSeq, sSpecies, nTime } (storage only)
+TradeJump.tPending = nil        -- { nSeq, sKind, sSpecies, sExtra, nTime }
 TradeJump.nSeq = 0
 TradeJump.tViews = global.setmetatable({}, { __mode = "k" })
 
@@ -64,8 +69,7 @@ local function now()
 end
 
 local function kin()
-	local Core = TradeJump.Core
-	return (Core and Core.Kin) or global.package.loaded["pz2qol.kin"]
+	return global.package.loaded["pz2qol.kin"]
 end
 
 -- "[Animal_Lion]" / "Animal_Lion" / "Lion" -> "Lion"; nil when it is not a
@@ -106,13 +110,18 @@ local function consts()
 	return nHub, nMarket, nStorage
 end
 
-local function count(t)
+-- Stored adults not listed on the market (ParkReads.StoredForSale): a listed
+-- animal is the market's, never one to bring back or count on.
+local function countUnlisted(animals, t)
 	if type(t) ~= "table" then
 		return 0
 	end
 	local n = 0
-	for _ in pairs(t) do
-		n = n + 1
+	for _, guid in pairs(t) do
+		local bOk, tData = pcall(animals.GetMarketAnimalCompareMatesData, animals, guid, 2)
+		if not ParkReads.StoredForSale(bOk and tData or nil, guid) then
+			n = n + 1
+		end
 	end
 	return n
 end
@@ -120,7 +129,7 @@ end
 -----------------------------------------------------------------------
 -- Open the hub on Market or Animal Storage (one click, one transition)
 -----------------------------------------------------------------------
-TradeJump.Open = function(self, oUI, sReq, sKind, sSpecies)
+TradeJump.Open = function(self, oUI, sReq, sKind, sSpecies, sExtra)
 	local function answer(bOk, sDetail)
 		mark(bOk and ("trade_open_" .. tostring(sKind)) or ("trade_open_fail_" .. tostring(sDetail)))
 		pcall(oUI.TriggerEventAtNextAdvance, oUI, "PZ2QoL_TradeOpenResult", sReq, bOk == true, sDetail or "")
@@ -136,9 +145,9 @@ TradeJump.Open = function(self, oUI, sReq, sKind, sSpecies)
 		end
 	end
 	local bOk, sDetail = self:_OpenHub(sKind, sp, function()
-		if sKind == "storage" and sp ~= "" then
-			self.nSeq = self.nSeq + 1
-			self.tPending = { nSeq = self.nSeq, sSpecies = sp, nTime = now() }
+		local sEx = string.gsub(tostring(sExtra or ""), "[^%w=;]", "")
+		if (sKind == "storage" and sp ~= "") or (sKind == "market" and sEx ~= "") then
+			Handover.Put(self, { sKind = sKind, sSpecies = sp, sExtra = sEx }, now())
 		end
 	end)
 	answer(bOk, sDetail)
@@ -203,13 +212,8 @@ TradeJump.Counts = function(self, oUI, sReq, sCsv)
 	if tAPIs ~= nil then
 		tOut.mode = Kin:_GameMode(tAPIs)
 		-- the trade centre's room (Bring to the trade centre)
-		pcall(function()
-			tOut.tc = Kin:_TradeCentre(tAPIs) ~= nil
-			local nMax, nNow = tAPIs.park:GetTradeCentreMaxCapacity(), tAPIs.park:GetNumberOfAnimalsInTradeCentre()
-			if type(nMax) == "number" and type(nNow) == "number" then
-				tOut.tcMax, tOut.tcNow = nMax, nNow
-			end
-		end)
+		pcall(function() tOut.tc = Kin:_TradeCentre(tAPIs) ~= nil end)
+		tOut.tcMax, tOut.tcNow = ParkReads.TradeCentreRoom(tAPIs.park)
 		local fn = nil
 		pcall(function() fn = api.planetHub.GetAdultsOfSpeciesInStorageSplitByGender end)
 		if type(fn) == "function" then
@@ -226,7 +230,7 @@ TradeJump.Counts = function(self, oUI, sReq, sCsv)
 					nDone = nDone + 1
 					local bOk, t = pcall(fn, sp)
 					if bOk and type(t) == "table" then
-						tOut.bySpecies[sp] = { m = count(t[1]), f = count(t[2]) }
+						tOut.bySpecies[sp] = { m = countUnlisted(tAPIs.animals, t[1]), f = countUnlisted(tAPIs.animals, t[2]) }
 					else
 						nErr = nErr + 1
 					end
@@ -253,22 +257,19 @@ end
 -- The storage filter, handed to the hub page until it confirms
 -----------------------------------------------------------------------
 TradeJump.Hello = function(self, oUI)
-	local t = self.tPending
+	local t, bExpired = Handover.Pending(self, now())
+	if bExpired then
+		mark("trade_filter_expired")
+	end
 	if t == nil then
 		return
 	end
-	if now() - t.nTime > self.nPendingSeconds then
-		self.tPending = nil
-		mark("trade_filter_expired")
-		return
-	end
-	pcall(oUI.TriggerEventAtNextAdvance, oUI, "PZ2QoL_TradeFilter", t.nSeq, "storage", t.sSpecies)
+	pcall(oUI.TriggerEventAtNextAdvance, oUI, "PZ2QoL_TradeFilter", t.nSeq, t.sKind, t.sSpecies, t.sExtra)
 	mark("trade_filter_sent")
 end
 
 TradeJump.Ack = function(self, nSeq)
-	if self.tPending ~= nil and tonumber(nSeq) == self.tPending.nSeq then
-		self.tPending = nil
+	if Handover.Ack(self, nSeq) then
 		mark("trade_filter_acked")
 	end
 end
@@ -281,28 +282,12 @@ TradeJump.Attach = function(self, oUI)
 		return
 	end
 	self.tViews[oUI] = true
-	local function guard(sName, fn)
-		return function(_, ...)
-			local bOk, sErr = pcall(fn, ...)
-			if not bOk then
-				trace(sName .. " failed: " .. tostring(sErr))
-			end
-		end
-	end
-	local bOk, sErr = pcall(function()
-		oUI:AddEventListener("PZ2QoL_TradeOpen", 3, guard("open", function(sReq, sKind, sSpecies)
-			self:Open(oUI, sReq, sKind, sSpecies)
-		end), self)
-		oUI:AddEventListener("PZ2QoL_TradeCounts", 2, guard("counts", function(sReq, sCsv)
-			self:Counts(oUI, sReq, sCsv)
-		end), self)
-		oUI:AddEventListener("PZ2QoL_TradeHello", 0, guard("hello", function()
-			self:Hello(oUI)
-		end), self)
-		oUI:AddEventListener("PZ2QoL_TradeAck", 1, guard("ack", function(nSeq)
-			self:Ack(nSeq)
-		end), self)
-	end)
+	local bOk, sErr = Handover.Listen(oUI, self, trace, {
+		{ "PZ2QoL_TradeOpen", 4, function(sReq, sKind, sSpecies, sExtra) self:Open(oUI, sReq, sKind, sSpecies, sExtra) end },
+		{ "PZ2QoL_TradeCounts", 2, function(sReq, sCsv) self:Counts(oUI, sReq, sCsv) end },
+		{ "PZ2QoL_TradeHello", 0, function() self:Hello(oUI) end },
+		{ "PZ2QoL_TradeAck", 1, function(nSeq) self:Ack(nSeq) end },
+	})
 	if not bOk then
 		trace("listeners failed: " .. tostring(sErr))
 	end

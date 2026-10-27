@@ -3,18 +3,56 @@
 //
 // Purely passive: it reads the DataStore lists the game already filled for
 // the screen you are looking at. It never requests data itself.
-import { listingKey, medalOf, mergeListings } from '/js/mods/pz2qol/pricing.js';
+import { LISTING_MAX_AGE_MS, listingKey, medalOf, mergeListings, pricedListings } from '/js/mods/pz2qol/pricing.js';
 import { geneScore } from '/js/mods/pz2qol/scores.js';
-import { childrenOf, HISTORY_LIST, MARKET_LIST, readAnimal } from '/js/mods/pz2qol/game.js';
+import { childrenOf, get, HISTORY_LIST, isExpired, isLiveAsk, MARKET_LIST, readAnimal } from '/js/mods/pz2qol/game.js';
 import { breadcrumb, reportError } from '/js/mods/pz2qol/errors.js';
 import { dlog } from '/js/mods/pz2qol/debuglog.js';
+import { callAll } from '/js/mods/pz2qol/storecore.js';
 
 // v2: keyed by listingKey(). v1 keyed by row id (a screen slot) and is dropped.
 const STORAGE_KEY = 'PZ2QoL.priceBook.v2';
 const OLD_STORAGE_KEYS = ['PZ2QoL.priceBook.v1'];
 const MAX_ENTRIES = 3000;
+// the whole book is written at once: changes close together share one write
+const SAVE_DELAY_MS = 2000;
+// past the oldest listing's age, so a timer that fires a little early still finds it too old
+const AGE_CHECK_SLACK_MS = 1000;
 let book = [];
+// the entries that count for prices (pricedListings), until the oldest of them grows too old
+let priced = [];
+let pricedUntil = Infinity;
+let ageTimer = null;
+let saveTimer = null;
 const listeners = new Set();
+
+function refreshPriced(now) {
+    priced = pricedListings(book, now);
+    pricedUntil = priced.reduce((soonest, l) => Math.min(soonest, l.seenAt + LISTING_MAX_AGE_MS), Infinity);
+    clearTimeout(ageTimer);
+    ageTimer = pricedUntil === Infinity ? null : setTimeout(() => ageOut(Date.now()), pricedUntil - now + AGE_CHECK_SLACK_MS);
+}
+
+// the views hear of it after the read, never inside a render
+function ageOut(now) {
+    const pricedBefore = priced.length;
+    refreshPriced(now);
+    // time only ages listings out, so the same count is the same set: an early timer just sets itself again
+    if (priced.length === pricedBefore) return;
+    setTimeout(() => callAll(listeners, priced), 0);
+}
+
+function setBook(next) {
+    book = next;
+    refreshPriced(Date.now());
+}
+
+// listings age out between market screens too
+function currentPriced() {
+    const now = Date.now();
+    if (now > pricedUntil) ageOut(now);
+    return priced;
+}
 
 function load() {
     try {
@@ -22,7 +60,7 @@ function load() {
         const raw = window.localStorage && window.localStorage.getItem(STORAGE_KEY);
         if (raw) {
             const parsed = JSON.parse(raw);
-            if (Array.isArray(parsed)) book = mergeListings(parsed, [], Date.now());
+            if (Array.isArray(parsed)) setBook(mergeListings(parsed, [], Date.now()));
         }
     }
     catch (e) {
@@ -31,12 +69,17 @@ function load() {
 }
 
 function save() {
+    saveTimer = null;
     try {
         if (window.localStorage) window.localStorage.setItem(STORAGE_KEY, JSON.stringify(book));
     }
     catch (e) {
         // ignore; in-memory book still works
     }
+}
+
+function saveSoon() {
+    if (saveTimer == null) saveTimer = setTimeout(save, SAVE_DELAY_MS);
 }
 
 function toListing(ctx, source) {
@@ -60,6 +103,13 @@ function toListing(ctx, source) {
     };
 }
 
+// read straight from the rows, so an unchanged screen builds no listings; the timer ticks, so it counts only as expired or not
+const SIGNATURE_FIELDS = ['species', 'name', 'gender', 'maturity', 'auctionPrice', 'auctionIsConservationCredits', 'ratings', 'colormorphLabel', 'isAdopted'];
+
+function rowSignature(ctx) {
+    return SIGNATURE_FIELDS.map(f => get(ctx, f)).join(',') + (isExpired(ctx) ? ',x' : '');
+}
+
 let lastSignature = '';
 let morphSeen = false;
 // debug trace, once: what a colour morph label looks like in game (unproven)
@@ -72,22 +122,27 @@ function traceMorph(valid) {
 }
 
 export function recordVisibleListings() {
-    const observed = [];
-    for (const ctx of childrenOf(MARKET_LIST)) observed.push(toListing(ctx, 'market'));
-    for (const ctx of childrenOf(HISTORY_LIST)) observed.push(toListing(ctx, 'history'));
-    const valid = observed.filter(l => l.id != undefined && l.price > 0 && l.species);
-    const signature = valid.map(l => `${l.source}:${l.id}:${l.price}:${l.medal}:${l.colormorph || ''}`).join('|');
+    const market = childrenOf(MARKET_LIST);
+    const history = childrenOf(HISTORY_LIST);
+    const signature = market.map(rowSignature).join('|') + '#' + history.map(rowSignature).join('|');
     if (signature == lastSignature) {
         return 0;
     }
     lastSignature = signature;
-    traceMorph(valid);
-    book = mergeListings(book, valid, Date.now());
-    if (book.length > MAX_ENTRIES) {
-        book.sort((x, y) => y.seenAt - x.seenAt);
-        book.length = MAX_ENTRIES;
+    const observed = [];
+    for (const ctx of market) {
+        if (isLiveAsk(ctx)) observed.push(toListing(ctx, 'market'));
     }
-    save();
+    for (const ctx of history) observed.push(toListing(ctx, 'history'));
+    const valid = observed.filter(l => l.id != undefined && l.price > 0 && l.species);
+    traceMorph(valid);
+    const next = mergeListings(book, valid, Date.now());
+    if (next.length > MAX_ENTRIES) {
+        next.sort((x, y) => y.seenAt - x.seenAt);
+        next.length = MAX_ENTRIES;
+    }
+    setBook(next);
+    saveSoon();
     // the debug log: what was recorded (only when the visible listings changed)
     try {
         const per = {};
@@ -100,16 +155,16 @@ export function recordVisibleListings() {
     catch (e) {
         // never stops recording
     }
-    listeners.forEach(fn => fn(book));
+    callAll(listeners, priced);
     return valid.length;
 }
 
 export function getPriceBook() {
-    return book;
+    return currentPriced();
 }
 
 export function countForSpecies(species) {
-    return book.filter(l => l.species == species && l.isCC).length;
+    return currentPriced().filter(l => l.species == species && l.isCC).length;
 }
 
 export function onPriceBookChanged(fn) {
@@ -119,16 +174,16 @@ export function onPriceBookChanged(fn) {
 
 // Adds listings from elsewhere (e.g. an import or a test fixture).
 export function mergeIntoPriceBook(listings) {
-    book = mergeListings(book, listings, Date.now());
-    save();
-    listeners.forEach(fn => fn(book));
+    setBook(mergeListings(book, listings, Date.now()));
+    saveSoon();
+    callAll(listeners, priced);
 }
 
 export function clearPriceBook() {
-    book = [];
+    setBook([]);
     lastSignature = '';
-    save();
-    listeners.forEach(fn => fn(book));
+    saveSoon();
+    callAll(listeners, priced);
 }
 
 export function installPriceBook() {

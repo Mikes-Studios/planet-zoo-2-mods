@@ -5,10 +5,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildKinModel, Sex } from '../mods/PZ2QoL/UI/UIGameface/js/mods/pz2qol/kincore.js';
 import { TRADE, simulatePlan } from '../mods/PZ2QoL/UI/UIGameface/js/mods/pz2qol/kinboardcore.js';
-import { PROGRAMME_STEPS, planProgramme } from '../mods/PZ2QoL/UI/UIGameface/js/mods/pz2qol/kinprogramme.js';
+import { PROGRAMME_SEARCH, PROGRAMME_STEPS, planProgramme } from '../mods/PZ2QoL/UI/UIGameface/js/mods/pz2qol/kinprogramme.js';
 import {
-    AUTO_LIMITS, AUTO_SEARCH, EVERY_CHOICES, SPECIES_DEFAULTS, calendarMonths, dueText, everyText, everyWords, locksOf, normalizeSpecies, observeChanges, realTimeText,
-    planAutoRun, programmeOptionsFor, projectGrownUp, speciesFingerprints,
+    AUTO_LIMITS, EVERY_CHOICES, SPECIES_DEFAULTS, calendarMonths, dueText, everyText, everyWords, locksOf, normalizeSpecies, observeChanges, realTimeText,
+    planAutoRun, programmeOptionsFor, relatedAdultPairs, speciesFingerprints,
 } from '../mods/PZ2QoL/UI/UIGameface/js/mods/pz2qol/kinautocore.js';
 import {
     LEDGER_VERSION, emptyLedger, fitBudget, isManualAnimal, isPinnedAnimal, ledgerView, logAction, normalizeLedger, noteManualMoves,
@@ -84,8 +84,8 @@ test('the programme\'s options are the board\'s for the same slider step, switch
         assert.equal(o.ratio, '1:3');
         if (st.outsider != null) assert.equal(o.outsiderCost, st.outsider);
         else assert.ok(!('outsiderCost' in o));
-        assert.equal(o.maxEvaluations, AUTO_SEARCH.maxEvaluations);
-        assert.equal(o.timeBudgetMs, AUTO_SEARCH.timeBudgetMs);
+        assert.equal(o.maxEvaluations, PROGRAMME_SEARCH.maxEvaluations);
+        assert.equal(o.timeBudgetMs, PROGRAMME_SEARCH.timeBudgetMs);
         assert.ok(!('pinIds' in o), 'no pins: the board\'s options exactly');
     });
     assert.ok(programmeOptionsFor(normalizeSpecies({}), 'auto', new Set(['x'])).pinIds.has('x'));
@@ -112,9 +112,8 @@ test('a run is the Breeding programme\'s plan when nothing is held back', () => 
         const model = buildKinModel(z.snap);
         for (const sp of z.species) {
             const settings = normalizeSpecies({ step: seed % 4 });
-            // the programme on the zoo with its nearly grown young counted as breeders
-            const seen = projectGrownUp(model, sp, z.info[sp], AUTO_LIMITS.growUpYears);
-            const prog = planProgramme(seen, sp, z.info[sp], z.dest, { options: programmeOptionsFor(settings) });
+            // the programme on the zoo as the game has it (a juvenile is planned once it is grown)
+            const prog = planProgramme(model, sp, z.info[sp], z.dest, { options: programmeOptionsFor(settings) });
             const r = planAutoRun({ model, species: sp, info: z.info[sp], destinations: z.dest, settings: Object.assign({}, settings, { thin: false }), view: {} });
             const kept = new Set(r.held.filter(x => x.why === 'the last breeder of its sex stays').map(x => x.id));
             // (a juvenile never goes to the trade centre: youth is left alone)
@@ -125,23 +124,28 @@ test('a run is the Breeding programme\'s plan when nothing is held back', () => 
     }
 });
 
-test('hands off and moved by the player: never moved, by the programme or by Thin out', () => {
+// Hands off keeps an animal where it is, except a pregnant or young one
+// waiting at the trade centre: it goes into a habitat (it can only give
+// birth or grow up there). A move by the player holds nothing: Auto mode's
+// plan wins on its species.
+test('hands off: never moved, by the programme or by Thin out, but out of the trade centre when it must', () => {
     for (let seed = 30; seed <= 50; seed++) {
         const z = makeZoo(seed, { assign: false });
         const model = buildKinModel(z.snap);
         const r0 = rng(seed);
         const all = Array.from(model.animals.values());
         const pinned = new Set(all.filter(() => r0.chance(0.25)).map(a => a.id));
-        const manual = new Set(all.filter(a => !pinned.has(a.id) && r0.chance(0.2)).map(a => a.id));
         for (const sp of z.species) {
-            const r = planAutoRun({ model, species: sp, info: z.info[sp], destinations: z.dest, settings: { thin: true, fill: 'strict' }, view: { pinned, manual } });
-            for (const m of r.moves) assert.ok(!pinned.has(m.id) && !manual.has(m.id), `seed ${seed}: ${m.id} moved`);
+            const r = planAutoRun({ model, species: sp, info: z.info[sp], destinations: z.dest, settings: { thin: true, fill: 'strict' }, view: { pinned } });
             for (const m of r.moves) {
                 const a = model.animals.get(m.id);
-                assert.ok(!a.preg && !a.moving, 'never a pregnant female or one on the move');
+                const housed = a.lt === 'trade' && (a.preg || a.juv) && m.to !== TRADE;
+                assert.ok(!pinned.has(m.id) || housed, `seed ${seed}: ${m.id} moved`);
+                assert.ok(!a.moving, 'never one on the move');
+                if (a.preg) assert.ok(housed, `seed ${seed}: a pregnant female moves only from the trade centre into a habitat`);
                 if (m.stage === 'thin') assert.ok(!a.juv, 'Thin out never sends young');
-                // the programme only moves young about to grow up
-                if (a.juv) assert.ok(a.age >= z.info[sp].fertilityAges.maturity - AUTO_LIMITS.growUpYears, `seed ${seed}: a baby moved`);
+                // a juvenile only grows up in a habitat: it moves only from the trade centre into one
+                if (a.juv) assert.ok(housed, `seed ${seed}: a juvenile moved out of its habitat`);
             }
         }
     }
@@ -197,13 +201,16 @@ test('a move the game refused lately is held back; a move back to a habitat just
     assert.ok(free.moves.every(x => x.reversal === false));
 });
 
-test('an animal Auto mode moved lately stays put', () => {
+// a move's cooldown keeps it from going back and forth, but never keeps an
+// animal beside a relative of the other sex (never inbreed)
+test('an animal Auto mode moved lately stays put, unless it lives beside a relative', () => {
     const model = buildKinModel(snap(RISKY()));
     const free = run(model);
     assert.ok(free.moves.length);
     const cooled = new Set(free.moves.map(m => m.id));
+    const inKinPair = new Set((relatedAdultPairs(model).get('Lion') || []).flat());
     const r = run(model, { view: { cooled } });
-    assert.ok(!r.moves.some(m => cooled.has(m.id)), JSON.stringify(r.moves));
+    assert.ok(!r.moves.some(m => cooled.has(m.id) && !inKinPair.has(m.id)), JSON.stringify(r.moves));
     // the ledger marks a moved animal cooled for the cooldown window
     const l = emptyLedger();
     const x = free.moves[0];
@@ -212,11 +219,16 @@ test('an animal Auto mode moved lately stays put', () => {
     assert.ok(!ledgerView(l, model, 3 + AUTO_LIMITS.cooldownYears + 0.01, 0).cooled.has(x.id));
 });
 
-test('a youngster about to grow up next to its father is placed before it can breed', () => {
+// a juvenile only grows up in a habitat and the game still treats one about
+// to grow up as young, so the run leaves her alone; once she is grown (Auto
+// mode runs a species as soon as one of its young grows up) it parts them
+test('a youngster next to her father is left alone, and parted from him once grown', () => {
     // habitat 1: father a, mother m, their daughter (2.8 of 3 years); habitat 2: an unrelated pair
     const animals = [an('a', M, '1'), an('m', F, '1', [], { genes: G('E', 'F') }), an('y', F, '1', ['a', 'm'], { juv: true, age: 2.8 }), an('b', M, '2', [], { genes: G('G', 'H') }), an('c', F, '2', [], { genes: G('I', 'J') })];
-    const model = buildKinModel(snap(animals));
-    const r = run(model);
+    const young = run(buildKinModel(snap(animals)));
+    assert.ok(!young.moves.some(m => m.id === 'y'), `the young one stays: ${JSON.stringify(young.moves)}`);
+    const grown = animals.map(a => (a.id === 'y' ? Object.assign({}, a, { juv: false, age: 3.1 }) : a));
+    const r = run(buildKinModel(snap(grown)));
     assert.ok(r.moves.some(m => m.id === 'y' || m.id === 'a'), `father and daughter split: ${JSON.stringify(r.moves)}`);
     // a baby is not moved
     const baby = animals.map(a => (a.id === 'y' ? Object.assign({}, a, { age: 0.5 }) : a));
@@ -224,15 +236,17 @@ test('a youngster about to grow up next to its father is placed before it can br
     assert.ok(!r2.moves.some(m => m.id === 'y'));
 });
 
-test('the last breeding male or female of a species is never sent to the trade centre', () => {
-    // a brother and sister, the only Lions: the programme would send one away
+test('the last breeding male or female of a species stays, unless it would live beside a relative', () => {
+    // a brother and sister, the only Lions: never inbreed sends one away
     const animals = [an('p', M, '1', [], { genes: G('E', 'F') }), an('q', F, '1', [], { genes: G('G', 'H') }), an('s', M, '1', ['p', 'q']), an('t', F, '1', ['p', 'q'])];
     const only = animals.filter(a => a.id === 's' || a.id === 't');
     const model = buildKinModel(Object.assign(snap(only, ['1']), { anc: { gp: { name: 'P' }, gq: { name: 'Q' } } }));
     const r = run(model, { info: INFO(['1']), destinations: DEST(['1']) });
-    assert.ok(!r.moves.some(m => m.to === TRADE), JSON.stringify(r.moves));
-    if (r.programme && r.programme.moves.some(m => m.to === TRADE)) assert.ok(r.held.some(x => x.why === 'the last breeder of its sex stays'));
-    assert.ok(r.notes.some(n => /no unrelated partner/.test(n)) || !r.programme.after.idle);
+    assert.equal(r.moves.filter(m => m.to === TRADE).length, 1, JSON.stringify(r.moves));
+    // with an unrelated pair beside them, the last breeder of each sex is kept
+    const pair = [an('s', M, '1'), an('t', F, '2')];
+    const kept = run(buildKinModel(snap(pair, ['1', '2'])), { info: INFO(['1', '2']), destinations: DEST(['1', '2']) });
+    assert.ok(!kept.moves.some(m => m.to === TRADE), JSON.stringify(kept.moves));
 });
 
 // Runs over and over on a zoo that does not change otherwise: they stop
@@ -329,7 +343,8 @@ test('ledger: what was done, refusals, the trade centre, the player\'s moves, pi
     const model = buildKinModel(snap(RISKY()));
     const l = emptyLedger();
     // a move to the trade centre: remembered as leaving
-    const x = { id: 'd', to: TRADE, reason: 'Thin out: too many', stage: 'thin' };
+    // a move the run marks as leaving (to be sold): Thin out's are
+    const x = { id: 'd', to: TRADE, reason: 'Thin out: too many', stage: 'thin', leave: true };
     const e = logAction(l, model, x, { run: 1, clock: 2, realNow: 1000, species: 'Lion' });
     assert.equal(e.o, 'wait');
     settleAction(l, e, x, true, { clock: 2, realNow: 1000 });

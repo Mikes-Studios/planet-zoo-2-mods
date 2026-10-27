@@ -13,7 +13,7 @@
 // In the hub the park is not loaded, so storage animals are only compared
 // with each other.
 import { getStorageKinModel, onKin, onKinState, requestStorageKin, setStorageRows } from '/js/mods/pz2qol/kin.js';
-import { compatibleSexes, explainRelation, percent, relationWord, relativesOf, severityRank, Sex, SEVERITY_INFO } from '/js/mods/pz2qol/kincore.js';
+import { compatibleSexes, coverReason, explainRelation, kinTier, pairSeverity, percent, relationWord, relativesOf, severityRank, Sex, SEVERITY_INFO } from '/js/mods/pz2qol/kincore.js';
 import { offspringBlock, sexClass, sexSymbol } from '/js/mods/pz2qol/kinui.js';
 import {
     appendVNode, cardHandlers, dsValue, findByClass, findVNode, gameModule, h, isFrontendPage, kinSlot, patchRender, unwrapUntil,
@@ -21,7 +21,7 @@ import {
 import { addStorageFilter, getListSource, getStorageFilters, refreshList } from '/js/mods/pz2qol/listfilter.js';
 import { childrenOf, get, locationName, STORAGE_LIST, STORAGE_LIST_KEY } from '/js/mods/pz2qol/game.js';
 import { pairPhrase, pairSentence } from '/js/mods/pz2qol/kinmates.js';
-import { h as dom } from '/js/mods/pz2qol/ui.js';
+import { h as dom, visibleBox } from '/js/mods/pz2qol/ui.js';
 import { reportError } from '/js/mods/pz2qol/errors.js';
 
 const MOD_ROWS = '/js/project/modules/AnimalMarket/Components/MarketAnimalListItem.js';
@@ -48,19 +48,9 @@ export function storageRowOf(ctx) {
         species: speciesKey(get(ctx, 'species')),
         sex: typeof get(ctx, 'gender') === 'number' ? get(ctx, 'gender') : Sex.Unisex,
         juv: get(ctx, 'maturity') === 0,
+        maturity: typeof get(ctx, 'maturity') === 'number' ? get(ctx, 'maturity') : undefined,
         preg: !!get(ctx, 'isPregnant'),
     };
-}
-
-function isVisible(sel) {
-    const node = document.querySelector(sel);
-    if (!node) return false;
-    const r = node.getBoundingClientRect();
-    if (r.width <= 0 || r.height <= 0) return false;
-    for (let n = node; n && n !== document.body; n = n.parentNode) {
-        if (n.classList && n.classList.contains('hidden')) return false;
-    }
-    return true;
 }
 
 let lastSig = '';
@@ -69,11 +59,11 @@ let lastAsk = 0;
 let retryAt = 0;
 
 function poll() {
-    if (!isVisible('.AnimalMarketStorage_header')) return;
+    if (!visibleBox(document.querySelector('.AnimalMarketStorage_header'))) return;
     const rows = childrenOf(STORAGE_LIST).map(storageRowOf).filter(Boolean);
     if (!rows.length) return;
     const ids = rows.map(r => r.id).sort().join(',');
-    const sig = rows.map(r => [r.id, r.name, r.species, r.sex, r.juv ? 1 : 0].join(':')).join('|');
+    const sig = rows.map(r => [r.id, r.name, r.species, r.sex, r.maturity].join(':')).join('|');
     const now = Date.now();
     // ask again when the answer never came, or Lua said storage was not
     // ready yet ('nostorage'), at most every RETRY_MS
@@ -102,7 +92,7 @@ export function storageRelatives(model, id) {
         .filter(r => r.tier !== 'distant')
         .map(r => {
             const breeding = compatibleSexes(self, r.animal) && !(self.sex === Sex.Unisex && r.animal.sex === Sex.Unisex);
-            const severity = !breeding ? 'covered' : (self.juv || r.animal.juv) ? 'future' : r.tier === 'game' ? 'risk' : 'kin';
+            const severity = breeding ? pairSeverity(self, r.animal, r.tier) : 'covered';
             return Object.assign({ breeding, severity }, r);
         })
         .sort((p, q) => severityRank(q.severity) - severityRank(p.severity) || q.kinship - p.kinship);
@@ -137,6 +127,7 @@ function tagText(r) {
 
 function why(model, self, r) {
     if (!r.breeding) return `${explainRelation(model, self, r.animal)} Same sex, so no breeding risk between these two.`;
+    if (r.severity === 'covered') return `${explainRelation(model, self, r.animal)} ${coverReason(self, r.animal)}, so no breeding risk between these two.`;
     const tail = r.tier === 'game'
         ? 'The game counts this pair as inbred: they would inbreed if housed together.'
         : 'The game does not warn about this pair, but their young would lose fertility and immunity.';
@@ -224,11 +215,12 @@ export function relatedBreedingPairs(model, ids) {
             const a = list[i], b = list[j];
             if (a.species !== b.species || !compatibleSexes(a, b)) continue;
             const rel = model.ped.relation(a.guid, b.guid);
-            if (!rel) continue;
-            const tier = rel.game ? 'game' : rel.kinship >= model.closeKinship - 1e-9 ? 'close' : 'distant';
-            if (tier === 'distant') continue;
+            const tier = kinTier(model, rel);
+            if (!tier || tier === 'distant') continue;
+            const severity = pairSeverity(a, b, tier);
+            // too old, infertile or one ages out first: no risk to warn about
+            if (severity === 'covered') continue;
             const [m, f] = a.sex === Sex.Female ? [b, a] : [a, b];
-            const severity = (a.juv || b.juv) ? 'future' : tier === 'game' ? 'risk' : 'kin';
             out.push({ a: m, b: f, rel, tier, severity, kinship: rel.kinship });
         }
     }

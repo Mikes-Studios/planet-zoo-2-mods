@@ -74,7 +74,7 @@ export function autosaveCard(onClose) {
     const choice = segmented(null, AUTOSAVE_CHOICES.map(m => ({
         value: m,
         label: m ? `${m} min` : 'Off',
-        tooltip: m ? `Autosave after ${m} minutes in the park, counted across trips to the hub` : "The game's own autosave only (every 10 minutes, restarted after every hub trip)",
+        tooltip: m ? `Autosave after ${m} minutes in the park, counted across trips to the hub` : "The game's own autosave only (every 10 minutes of park time)",
     })), v => setAutosaveMinutes(v));
     const now = h('div.PZ2QoL_btn.PZ2QoL_asNow', { title: "Ask the game for an autosave now (the game's own autosave slots)", onClick: safe('Save now', () => autosaveNow()) }, 'Save now');
     const close = h('div.PZ2QoL_asClose', { title: 'Close', onClick: () => onClose && onClose() }, '×');

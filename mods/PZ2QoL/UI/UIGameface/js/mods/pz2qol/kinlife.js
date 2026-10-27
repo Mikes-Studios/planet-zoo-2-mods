@@ -14,7 +14,7 @@
 // juvenile's adultIn / adultAge, an adult's `out`, and per species
 // speciesFacts.social { min, max } and .maturation. Whatever is missing is
 // skipped; with nothing to judge by, a notice stays info.
-import { Sex, compatibleSexes, fertileNow, notYet, relationWord } from './kincore.js';
+import { Sex, compatibleSexes, fertileNow, kinTier, notYet, overcrowdingOn, relationWord } from './kincore.js';
 
 export const LEVELS = {
     action: { rank: 3, label: 'Needs you', toastMs: 60000 },
@@ -26,7 +26,8 @@ const BIRTH_FRACTION = 0.1;             // of the adult age: younger is a birth
 const BIRTH_YEARS = 0.3;                // without an adult age
 const WATCH_SCANS = 3;                  // scans after growing up that watch for `out`
 const GONE_MS = 30 * 60 * 1000;         // a gone animal's notices are forgotten
-const KINDS = ['birth', 'soon', 'adult', 'out'];
+// what was said about an animal: growing up and becoming able to breed apart
+const KINDS = ['birth', 'soon', 'soonBreed', 'adult', 'breed', 'out'];
 
 export function levelRank(l) {
     return (LEVELS[l] || {}).rank || 0;
@@ -88,11 +89,12 @@ export function assessGrowUp(model, a, { growing = null, phase = 'soon', kind = 
     const adults = habitatAdults(model, a.hab, a.species);
     const others = adults.filter(x => x !== a);
     const soon = phase === 'soon';
-    // a) the group size against the game's limit
-    const social = facts.social && typeof facts.social.max === 'number' ? facts.social : null;
+    // a) the group size against the game's limit (none with overcrowding off)
+    const crowding = overcrowdingOn(model);
+    const social = crowding && facts.social && typeof facts.social.max === 'number' ? facts.social : null;
     let atLimit = false;
-    if (!social) skipped.push('social');
-    else {
+    if (crowding && !social) skipped.push('social');
+    else if (social) {
         const joining = soon && kind === 'adult' ? (growing || [a]).filter(x => x.juv).length : 0;
         const total = adults.length + joining;
         atLimit = total >= social.max;
@@ -130,7 +132,7 @@ export function assessGrowUp(model, a, { growing = null, phase = 'soon', kind = 
         const partner = others.find(x => {
             if (!compatibleSexes(a, x) || x.contra || !fertileNow(x)) return false;
             const rel = a.guid && x.guid && model.ped ? model.ped.relation(a.guid, x.guid) : null;
-            return !rel || (!rel.game && !(rel.kinship >= (model.closeKinship || 1 / 16) - 1e-9));
+            return !rel || kinTier(model, rel) === 'distant';
         });
         if (partner) add('heads', 'breedFull', `${a.name} is not on contraception and the group is full: young from ${a.name} and ${partner.name} would overcrowd it.`, { contra: a, partner });
     }
@@ -203,9 +205,10 @@ export function lifeEvents(prev, next, { horizon = DEFAULT_HORIZON, state = crea
                 }
             }
             for (const a of growing) {
-                if (said('soon', a)) continue;
-                say('soon', a);
                 const g = growth.get(a);
+                const key = g.kind === 'breed' ? 'soonBreed' : 'soon';
+                if (said(key, a)) continue;
+                say(key, a);
                 const r = assessGrowUp(next, a, { growing, phase: 'soon', kind: g.kind });
                 push('soon', a, r.level, r.reasons, { years: g.years });
             }
@@ -215,8 +218,8 @@ export function lifeEvents(prev, next, { horizon = DEFAULT_HORIZON, state = crea
                 const p = before.get(keyOf(a));
                 if (!p || a.juv) continue;
                 const kind = p.juv ? 'adult' : (p.fert && p.fert.state === 'young' && fertileNow(a)) ? 'breed' : null;
-                if (!kind || said('adult', a)) continue;
-                say('adult', a);
+                if (!kind || said(kind, a)) continue;
+                say(kind, a);
                 if (kind === 'adult') state.watch.set(keyOf(a), WATCH_SCANS + 1);
                 const r = assessGrowUp(next, a, { phase: 'now', kind });
                 push('adult', a, r.level, r.reasons);

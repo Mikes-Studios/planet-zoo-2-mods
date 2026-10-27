@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {
     buildKinModel, normalizeSnapshot, Pedigree, predictOffspring, ownGrades, offspringScore, relationWord,
     animalSeverity, animalPairs, explainRelation, habitatSummary, habitatByName, habitatsAtRisk, mateCandidates,
-    newRisks, relatedAmong, relativesOf, percent, Sex, pairSeverity, describeRelation, worstSeverity, kinClusters, canLocate,
+    newRisks, relativesOf, percent, Sex, pairSeverity, describeRelation, kinClusters, canLocate,
     normalizeStored, withStored,
 } from '../mods/PZ2QoL/UI/UIGameface/js/mods/pz2qol/kincore.js';
 import { countsExcluding, riskHabitatsExcluding } from '../mods/PZ2QoL/UI/UIGameface/js/mods/pz2qol/kincore.js';
@@ -225,12 +225,8 @@ test('muted species: no new-risk alerts and no alert counts, the model itself un
     assert.deepEqual(riskHabitatsExcluding(after, new Set()).map(h => h.name).sort(), ['Jungle Habitat', 'Savannah Habitat']);
 });
 
-test('storage: related among a set, relatives of one', () => {
+test('storage: the relatives of one', () => {
     const m = buildKinModel(zoo());
-    const rel = relatedAmong(m, ['k1', 'k2', 'u', 'a']);
-    assert.equal(rel.length, 3);                            // a-k1, a-k2, k1-k2
-    assert.equal(rel.every(p => p.tier == 'game'), true);
-    assert.equal(rel.find(p => [p.a.id, p.b.id].sort().join() == 'a,k1').breeding, false);
     const of = relativesOf(m, 'k1');
     assert.deepEqual(of.map(r => r.animal.id).sort(), ['a', 'h1', 'k2']);
 });
@@ -240,7 +236,6 @@ test('helpers', () => {
     assert.equal(percent(0.0625), '6.25%');
     assert.equal(percent(0.125), '12.5%');
     assert.equal(percent(0), '0%');
-    assert.equal(worstSeverity(['covered', 'risk', 'kin']), 'risk');
     assert.equal(pairSeverity({ juv: true }, { contra: false }, 'game'), 'future');
     assert.equal(pairSeverity({ infertile: true }, {}, 'game'), 'covered');
 });

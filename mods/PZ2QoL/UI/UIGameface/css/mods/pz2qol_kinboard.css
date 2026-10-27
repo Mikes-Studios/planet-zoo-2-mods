@@ -62,9 +62,13 @@
   background-color: var(--qol-card-2);
 }
 .PZ2QoL_kpScroll.rail > .PZ2QoL_kpViewport > .PZ2QoL_kpContent { padding: 0.45rem 0.75rem 0.45rem 0.45rem; }
+/* min-height 0 and the clip: a long panel (Auto mode's runs) scrolls inside
+   the board instead of growing it over the plan bar */
 .PZ2QoL_kbBoard {
   flex: 1;
   min-width: 0;
+  min-height: 0;
+  overflow: hidden;
   flex-direction: column;
   padding: 0.65rem 0.75rem 0.45rem 0.75rem;
   border-radius: 0.9rem;
@@ -122,7 +126,7 @@
 .PZ2QoL_kbLock { background-color: rgba(217, 134, 42, 0.2); color: var(--kp-kin-ink); font-weight: bold; }
 .PZ2QoL_kbDestState.unknown { background-color: rgba(185, 154, 42, 0.16); color: var(--kp-future-ink); }
 .PZ2QoL_kbHint { flex-shrink: 0; margin-bottom: 0.5rem; padding: 0.35rem 0.6rem; border-radius: 0.5rem; font-size: 0.76rem; white-space: normal; }
-.PZ2QoL_kbHint.warn { background-color: rgba(217, 134, 42, 0.16); color: var(--kp-kin-ink); }
+.PZ2QoL_kbHint.warn { background-color: var(--kin-kin-soft); color: var(--kp-kin-ink); }
 
 /* -------------------------------------------------------------- columns */
 
@@ -302,7 +306,7 @@
   margin-bottom: 0.35rem;
   border-radius: 0.55rem;
   background-color: #FFFFFF;
-  border: 0.1rem solid rgba(114, 91, 74, 0.14);
+  border: 0.1rem solid var(--qol-line);
   box-shadow: 0 0.06rem 0.2rem rgba(60, 45, 30, 0.12);
   overflow: hidden;
   cursor: pointer;
@@ -390,7 +394,7 @@
 }
 .PZ2QoL_kbCardMenu:hover, .PZ2QoL_kbCardX:hover { background-color: var(--qol-chip-hover); }
 .PZ2QoL_kbDot { width: 0.2rem; height: 0.2rem; margin: 0 0.06rem; border-radius: 0.1rem; background-color: var(--qol-ink-soft); }
-.PZ2QoL_kbCardX .PZ2QoL_kpCloseX { width: 0.7rem; height: 0.13rem; margin: -0.065rem 0 0 -0.35rem; }
+.PZ2QoL_kbCardX .PZ2QoL_icon.cross { width: 0.65rem; height: 0.65rem; margin: -0.325rem 0 0 -0.325rem; }
 
 /* the card under the pointer while dragging */
 .PZ2QoL_kbDrag {
@@ -547,7 +551,7 @@
   background-color: rgba(114, 91, 74, 0.1);
 }
 .PZ2QoL_kbNotice.ok { background-color: var(--kin-ok-soft); color: var(--kp-ok-ink); }
-.PZ2QoL_kbNotice.warn { background-color: rgba(217, 134, 42, 0.16); color: var(--kp-kin-ink); }
+.PZ2QoL_kbNotice.warn { background-color: var(--kin-kin-soft); color: var(--kp-kin-ink); }
 .PZ2QoL_kbNotice.bad { background-color: var(--kin-risk-soft); color: var(--kp-risk-ink); font-weight: bold; }
 
 .PZ2QoL_kbActions { flex-shrink: 0; width: 23.5rem; flex-direction: column; margin-left: 0.8rem; }
@@ -566,7 +570,7 @@
 .PZ2QoL_kbWarn { flex-shrink: 0; margin-top: 0.15rem; font-size: 0.66rem; line-height: 0.92rem; color: var(--qol-ink-soft); white-space: normal; }
 .PZ2QoL_kbRunTitle { flex-shrink: 0; font-size: 0.95rem; font-weight: bold; }
 .PZ2QoL_kbRunNow { flex-shrink: 0; margin-top: 0.15rem; font-size: 0.78rem; white-space: nowrap; overflow: hidden; }
-.PZ2QoL_kbProgress { flex-shrink: 0; height: 0.45rem; margin: 0.4rem 0 0.3rem 0; border-radius: 0.225rem; background-color: rgba(114, 91, 74, 0.14); }
+.PZ2QoL_kbProgress { flex-shrink: 0; height: 0.45rem; margin: 0.4rem 0 0.3rem 0; border-radius: 0.225rem; background-color: var(--qol-line); }
 .PZ2QoL_kbProgressFill { height: 100%; border-radius: 0.225rem; background-color: var(--qol-olive); transition: width 0.3s ease-out; }
 .PZ2QoL_kbRunNote { flex-shrink: 0; font-size: 0.7rem; color: var(--qol-ink-soft); white-space: normal; }
 .PZ2QoL_kbRunResult { flex-shrink: 0; margin-top: 0.35rem; font-size: 0.74rem; line-height: 1rem; font-weight: bold; white-space: normal; }
@@ -603,7 +607,7 @@
 }
 .PZ2QoL_kbAssign:hover { background-color: var(--qol-chip-hover); color: var(--qol-ink); }
 .PZ2QoL_kbAssign.mine { color: #FFFFFF; background-color: var(--qol-olive); border: 0.08rem solid var(--qol-olive); }
-.PZ2QoL_kbAssign.other { color: #9A5B12; background-color: rgba(217, 134, 42, 0.16); border: 0.08rem solid rgba(217, 134, 42, 0.4); }
+.PZ2QoL_kbAssign.other { color: #9A5B12; background-color: var(--kin-kin-soft); border: 0.08rem solid rgba(217, 134, 42, 0.4); }
 .PZ2QoL_kbIntruders { min-width: 0; margin-left: 0.35rem; overflow: hidden; font-size: 0.68rem; font-weight: bold; color: #9A5B12; white-space: nowrap; }
 .PZ2QoL_kbProblem.warn { color: #9A5B12; }
 
@@ -645,7 +649,7 @@
   font-size: 0.74rem;
   line-height: 1.02rem;
   white-space: normal;
-  background-color: rgba(217, 134, 42, 0.16);
+  background-color: var(--kin-kin-soft);
   color: var(--kp-kin-ink);
 }
 .PZ2QoL_kbStats { flex-shrink: 0; margin-bottom: 0.5rem; }
@@ -720,6 +724,7 @@
 /* breeding programme: the group make-up (arrows step through the choices) */
 .PZ2QoL_kbRatio { flex-shrink: 0; align-items: center; height: 2rem; margin-right: 0.6rem; padding: 0 0.2rem; border-radius: 1rem; background-color: var(--qol-chip); }
 .PZ2QoL_kbRatio.mine { background-color: rgba(79, 138, 134, 0.18); }
+.PZ2QoL_kbRatio.fixed { padding: 0 0.6rem; }
 .PZ2QoL_kbRatioArrow { justify-content: center; align-items: center; width: 1.6rem; height: 1.6rem; border-radius: 0.8rem; font-size: 1.1rem; font-weight: bold; color: var(--qol-ink-soft); cursor: pointer; }
 .PZ2QoL_kbRatioArrow:hover { background-color: var(--qol-chip-hover); color: var(--qol-ink); }
 .PZ2QoL_kbRatioText { flex-direction: column; align-items: center; min-width: 6.2rem; padding: 0 0.2rem; }
@@ -730,7 +735,7 @@
 /* breeding programme: the optimiser at work */
 .PZ2QoL_kbProgBusy { flex-shrink: 0; align-items: center; margin-bottom: 0.4rem; padding: 0.3rem 0.6rem; border-radius: 0.45rem; background-color: var(--qol-chip); font-size: 0.76rem; color: var(--qol-ink-soft); }
 .PZ2QoL_kbProgBusyText { flex-shrink: 0; white-space: nowrap; }
-.PZ2QoL_kbProgBusyBar { flex: 1; min-width: 4rem; height: 0.45rem; margin: 0 0.6rem; border-radius: 0.225rem; background-color: rgba(114, 91, 74, 0.14); }
+.PZ2QoL_kbProgBusyBar { flex: 1; min-width: 4rem; height: 0.45rem; margin: 0 0.6rem; border-radius: 0.225rem; background-color: var(--qol-line); }
 .PZ2QoL_kbProgBusyFill { height: 100%; border-radius: 0.225rem; background-color: var(--qol-olive); }
 .PZ2QoL_kbProgBusyPct { flex-shrink: 0; width: 2.6rem; font-weight: bold; white-space: nowrap; }
 .PZ2QoL_kbProg.busy .PZ2QoL_kbStats, .PZ2QoL_kbProg.busy .PZ2QoL_kpScroll.kbProgGroups { opacity: 0.55; }
@@ -791,7 +796,7 @@
   border: 0.08rem solid currentColor;
 }
 .PZ2QoL_kbCullX { position: relative; flex-shrink: 0; width: 1.1rem; height: 1.1rem; margin-left: 0.3rem; border-radius: 0.55rem; opacity: 0.35; }
-.PZ2QoL_kbCullX .PZ2QoL_kpCloseX { width: 0.6rem; height: 0.12rem; margin: -0.06rem 0 0 -0.3rem; background-color: var(--kp-risk-ink); }
+.PZ2QoL_kbCullX .PZ2QoL_icon.cross { width: 0.55rem; height: 0.55rem; margin: -0.275rem 0 0 -0.275rem; }
 .PZ2QoL_kbCullRow:hover .PZ2QoL_kbCullX { opacity: 1; background-color: var(--kin-risk-soft); }
 .PZ2QoL_kbCullUndo { flex-shrink: 0; margin-left: 0.3rem; padding: 0 0.35rem; height: 1.05rem; align-items: center; border-radius: 0.525rem; font-size: 0.64rem; font-weight: bold; color: var(--kp-ok-ink); border: 0.08rem solid currentColor; }
 .PZ2QoL_kbTag.fert_old, .PZ2QoL_kbTag.fert_infertile { background-color: rgba(143, 133, 120, 0.25); color: var(--kp-covered-ink); }
@@ -877,5 +882,5 @@
 .PZ2QoL_kbDeep.stale, .PZ2QoL_kbDeep.stopped { background-color: rgba(201, 145, 52, 0.14); }
 .PZ2QoL_kbDeep.exact { background-color: rgba(89, 105, 67, 0.12); }
 .PZ2QoL_kbDeep.running .PZ2QoL_kbDeepText { flex: 0 1 auto; white-space: nowrap; overflow: hidden; }
-.PZ2QoL_kbDeepBar { flex: 1; min-width: 4rem; height: 0.45rem; margin: 0 0.6rem; border-radius: 0.225rem; background-color: rgba(114, 91, 74, 0.14); }
+.PZ2QoL_kbDeepBar { flex: 1; min-width: 4rem; height: 0.45rem; margin: 0 0.6rem; border-radius: 0.225rem; background-color: var(--qol-line); }
 .PZ2QoL_kbDeepFill { height: 100%; border-radius: 0.225rem; background-color: var(--qol-teal); }

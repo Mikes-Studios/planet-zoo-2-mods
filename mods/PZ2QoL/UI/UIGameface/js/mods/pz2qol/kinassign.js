@@ -9,9 +9,10 @@
 // (kinboardcore resolveAssignments). Saved keys are rewritten to today's ids
 // once the zoo's data is read; an assignment whose habitat is not found is
 // not shown (no ghost columns) and dropped after a few loads.
-import { normalizeAssignments, habitatPrints, printOf, resolveAssignments, rekeyAssignments, assignmentsFromSection, fullHabitatList } from '/js/mods/pz2qol/kinboardcore.js';
+import { habitatPrints, printOf, resolveAssignments, rekeyAssignments, assignmentsFromSection, fullHabitatList } from '/js/mods/pz2qol/kinboardcore.js';
 import { getUserData, setUserData, updateUserData, loadUserData, onUserData, userDataStatus, userDataReason, userDataEpoch } from '/js/mods/pz2qol/userstore.js';
 import { breadcrumb } from '/js/mods/pz2qol/errors.js';
+import { callAll } from '/js/mods/pz2qol/storecore.js';
 
 const DATA_KEY = 'kinAssign';
 const OLD_KEY = 'PZ2QoL.kin.assign.v1'; // earlier builds: localStorage only
@@ -45,14 +46,7 @@ function readAll() {
 })();
 
 function notify() {
-    listeners.forEach(fn => {
-        try {
-            fn();
-        }
-        catch (e) {
-            // never break the toggle
-        }
-    });
+    callAll(listeners);
 }
 
 // the zoo's data arrived (or could not be used): redraw with what it holds

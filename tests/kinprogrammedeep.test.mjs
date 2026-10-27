@@ -169,16 +169,16 @@ test('deep: never below its warm start or Classic (random zoos, with and without
     }
 });
 
-test('deep: reaches the proven optimum where Classic falls short (benchmark zoos)', () => {
-    // optima proven by the exact solver (HiGHS; 2026-10-19 again, with monogamous mates
-    // paired only with each other and bond costs only for monogamy: 40 1:3 seed 1 now has
-    // only polygynous mates and Classic already reaches its optimum, so seed 4)
-    for (const [n, makeup, seed, optimum] of [[20, 'monogamy', 1, 3.002778], [40, '1:3', 4, 9.963160]].slice(0, LONG ? 2 : 1)) {
+// The optima the exact solver (HiGHS) proved for these zoos belong to the
+// earlier objective: the breeding standard and the young's calves score a
+// plan differently now. Prove them again with the solver before pinning one
+// here (never what Deep finds); until then Deep is held to Classic on them.
+test('deep: never below Classic on the benchmark zoos', () => {
+    for (const [n, makeup, seed] of [[20, 'monogamy', 1], [40, '1:3', 4]].slice(0, LONG ? 2 : 1)) {
         const z = makeZoo(n, makeup, seed);
         const c = classic(z);
         const d = deep(z, { starts: 12, warm: c.moves });
-        assert.ok(c.score < optimum - 0.01, `${n} ${makeup}: Classic already optimal (${c.score})`);
-        assert.ok(Math.abs(d.score - optimum) < 1e-4, `${n} ${makeup}: deep ${d.score}, optimum ${optimum}`);
+        assert.ok(d.score >= c.score - 1e-6, `${n} ${makeup}: deep ${d.score} < classic ${c.score}`);
         assert.equal(d.starts, 12);
         assert.equal(d.stopped, null);
     }

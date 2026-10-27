@@ -76,7 +76,7 @@ test('an adult not mature yet is a later risk, not covered', () => {
     assert.equal(m.pairs[0].severity, 'future');
 });
 
-test('Suggest fixes: old animals are not breeders, last-years pairs count half', () => {
+test('Suggest fixes: old animals are not breeders, a breeder in its last years counts half', () => {
     const m = model([
         an('old', M, '1', [], { infertile: true, age: 16, ageQ: 3 }),
         an('late', M, '2', [], { age: 13.5 }),
@@ -86,7 +86,8 @@ test('Suggest fixes: old animals are not breeders, last-years pairs count half',
     assert.equal(breedingPairs(m, '1', 'Lion').pairs, 0);
     const b2 = breedingPairs(m, '2', 'Lion');
     assert.equal(b2.pairs, 1);
-    assert.equal(b2.weighted, 0.5);
+    // the late male counts half, his partner whole
+    assert.equal(b2.bred, 1.5);
 });
 
 test('Suggest fixes explains why a moved animal does not breed', () => {

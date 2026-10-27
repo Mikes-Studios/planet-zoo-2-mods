@@ -1,5 +1,5 @@
 // What the Species board's engines answer for the seeded zoos, as plain
-// JSON. Recorded once from the code before Autopilot (engines_golden.json);
+// JSON, recorded in engines_golden.json (record_engines_golden.mjs);
 // tests/engines_equivalence.test.mjs checks the engines still answer exactly
 // this with no Autopilot option set (design section 0a: off changes nothing).
 import { buildKinModel } from '../../mods/PZ2QoL/UI/UIGameface/js/mods/pz2qol/kincore.js';

@@ -4,6 +4,7 @@
 // table, a column head sorts, a group pill filters, Log snapshot asks Lua and
 // shows the lines, Compact folds it, closing stops profiling. The page's own
 // JS hooks time a handler while running.
+import { dockButton } from './dock.mjs';
 export const name = 'profiler';
 
 function luaReport(on) {
@@ -50,10 +51,10 @@ export async function hud(page, ctx) {
                 }
             }
         });
-        // the dock's last button opens it (when the dock has room for it)
-        const nButtons = await page.locator('.PZ2QoL_dockBtn:not(.displayNone)').count();
-        facts.dockButtons = nButtons;
-        if (nButtons >= 4) await page.locator('.PZ2QoL_dockBtn').nth(3).click();
+        // the dock's Script profiler button opens it (when the dock has room for it)
+        const button = dockButton(page, 'Script profiler');
+        facts.dockButtons = await page.locator('.PZ2QoL_dockBtn:not(.displayNone)').count();
+        if (await button.isVisible()) await button.click();
         else await page.evaluate(() => window.PZ2QoL_profiler.open());
         await page.waitForTimeout(400);
         facts.open = await page.evaluate(() => !!document.querySelector('.PZ2QoL_pf:not(.hidden)'));

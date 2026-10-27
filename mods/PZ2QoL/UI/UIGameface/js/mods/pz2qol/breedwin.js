@@ -1,7 +1,11 @@
 // Breeding window: the Breeding programme in a small window where the game
-// opens its own info panels (top right), for one species at a time.
+// opens its own info panels (top right).
 //
-//   head      title, the species (click to pick another), close
+//   setup     where it opens: tick habitats in a list (or the one on the
+//             game's panel), then add the species that go in all of them;
+//             "Plan" opens a species' programme. The same assignments as
+//             the Habitats tab, so a mixed habitat is one list.
+//   head      title, the habitat or species (click for the species list), close
 //   picker    search, then the species in the zoo, in Animal Storage, and
 //             every other species the game knows (its Zoopedia)
 //   tabs      Habitats   the habitats set aside for the species; "Pick in
@@ -22,29 +26,33 @@
 // Gameface: own DOM under <body>, explicit display:flex, no native
 // scrolling (kinpanel.js), events from Lua driven from the page's own timer.
 import { Sex } from '/js/mods/pz2qol/kincore.js';
-import { TRADE, speciesList } from '/js/mods/pz2qol/kinboardcore.js';
+import { TRADE, homeOf, placeName, speciesList } from '/js/mods/pz2qol/kinboardcore.js';
 import {
-    catalogueFromZoopedia, habitatRows, infoPanelTarget, moveTarget, pickedHabitat, programmeSignature, runnableMoves, speciesChoices, speciesOfPanel,
+    habitatChoices, habitatRows, habitatSpeciesRows, infoPanelTarget, pickedHabitat, programmeSignature, runnableMoves, speciesChoices, staleDeepText,
 } from '/js/mods/pz2qol/breedwincore.js';
 import { getKinModel, locatePlace, markKinActive, onKin, onKinSettings, requestKinScan } from '/js/mods/pz2qol/kin.js';
 import { getPlanRun, onPlanRun, planBlockedReason, requestDestinations, requestSpeciesInfo, runPlan, stopPlan } from '/js/mods/pz2qol/kinmoves.js';
-import { PROGRAMME_DEFAULT_STEP, PROGRAMME_STEPS, RATIO_CHOICES, groupRule, planProgrammeAsync, programmeProblemSig, ratioKey, withFreshYoung } from '/js/mods/pz2qol/kinprogramme.js';
+import { PROGRAMME_STEPS, groupRule, planProgrammeAsync, programmeProblemSig, withFreshYoung } from '/js/mods/pz2qol/kinprogramme.js';
 import {
-    CPU_ORDER, CPU_STEPS, CUSTOM_STEPS, DEEP_PRESETS, PRESET_ORDER, PRESET_WORDS, cpuOf, deepJob, deepKey, deepResult, deepSettings, durationText,
+    makeupFixed, makeupShort, programmeHabitats, programmeKey, programmeOptions, ratioChoice, saveProgStep, savedProgStep, stepRatioChoice,
+} from '/js/mods/pz2qol/progprefs.js';
+import {
+    AUTO_CPU, CPU_ORDER, CPU_STEPS, CUSTOM_STEPS, DEEP_PRESETS, PRESET_ORDER, PRESET_WORDS, cpuOf, deepJob, deepKey, deepResult, deepSettings, durationText,
     estimateSeconds, getOptimiser, latestDeepResult, msPerStartFor, onDeep, onOptimiser, setOptimiser, startDeep, stopDeep,
 } from '/js/mods/pz2qol/kinprogdeep.js';
-import { PROGRAMME_TUNING, TUNE_PREF, applyTuning, tuningChoice, tuningCount, tuningKey } from '/js/mods/pz2qol/kinprogtune.js';
+import { PROGRAMME_TUNING, TUNE_PREF, tuningChoice, tuningCount } from '/js/mods/pz2qol/kinprogtune.js';
 import { getAssignments, onAssignments, toggleAssignment, assignmentStorage } from '/js/mods/pz2qol/kinassign.js';
 import { getStorageCounts, onStorageCounts, requestStorageCounts } from '/js/mods/pz2qol/tradejump.js';
 import { fetchRow } from '/js/mods/pz2qol/storagefetch.js';
-import { getPref, setPref } from '/js/mods/pz2qol/prefs.js';
-import { getUserData, onUserData, updateUserData } from '/js/mods/pz2qol/userstore.js';
-import { gameModule, isHudPage } from '/js/mods/pz2qol/kinhooks.js';
+import { getPref, setPref, updatePref } from '/js/mods/pz2qol/prefs.js';
+import { onUserData } from '/js/mods/pz2qol/userstore.js';
+import { isHudPage } from '/js/mods/pz2qol/kinhooks.js';
+import { HABITAT_SPECIES } from '/js/mods/pz2qol/speciesrules.js';
 import { sexSymbol } from '/js/mods/pz2qol/kinui.js';
 import {
     btn as kitBtn, closeButton, closeOtherPanels, makeGuard, makeScroll, refreshBars, registerPanel, restoreScroll, speciesName, switchEl as kitSwitch, trunc,
 } from '/js/mods/pz2qol/kinpanel.js';
-import { clear, h, icon, setClass, setText } from '/js/mods/pz2qol/ui.js';
+import { clear, crossMark, h, icon, setClass, setText, visibleBox } from '/js/mods/pz2qol/ui.js';
 import { breadcrumb, reportError } from '/js/mods/pz2qol/errors.js';
 import { dlog } from '/js/mods/pz2qol/debuglog.js';
 
@@ -55,10 +63,6 @@ const CLOSE_GAME_MS = 2500;
 // storage counts: species per Lua call (tradejump.lua nMaxSpecies), one call a tick
 const STORED_CHUNK = 40;
 const STORED_MAX = 320;
-const SPECIES_PREF = 'bwSpecies';
-const PROG_STEP_PREF = 'progStep';    // the board's slider (kinboard.js)
-const RATIO_STORE = 'kinRatio';       // the board's make-up per species (kinboard.js)
-const PROG_SEARCH = { maxEvaluations: 3000000, timeBudgetMs: 6000 };
 const MOVES_SHOWN = 40;
 
 const guard = makeGuard('Breeding window');
@@ -74,6 +78,7 @@ const W = {
     picker: false,            // the species list is showing
     query: '',
     picking: false,           // "Pick in the park" is on
+    setup: null,              // "Choose habitats": { habs: [ids], step: habitats | species }
     notice: null,             // { text, tone, until }
     dest: null,
     prog: null,
@@ -88,7 +93,6 @@ const W = {
     closeGameUntil: 0,        // close a game info panel that shows before this
     keepUntil: 0,             // a panel we asked for (Show in park) does not close us
     // species the game knows, and which of them are in storage
-    catalogue: null,
     storedQueue: [],
     storedAsked: 0,
     autoMod: null,
@@ -111,8 +115,8 @@ function queueRender() {
     }, 30);
 }
 
-function placeName(model, to) {
-    return moveTarget(model, to, destFor(model));
+function whereName(model, to) {
+    return placeName(model, to, destFor(model));
 }
 
 function destFor(model) {
@@ -137,29 +141,14 @@ function countsText(m, f, young = 0) {
     return bits.join(' · ');
 }
 
-function savedStep() {
-    const v = getPref(PROG_STEP_PREF);
-    return Number.isInteger(v) && v >= 0 && v < PROGRAMME_STEPS.length ? v : PROGRAMME_DEFAULT_STEP;
-}
-
-function ratioChoice(species) {
-    const all = getUserData(RATIO_STORE);
-    const v = all && typeof all === 'object' && !Array.isArray(all) ? all[species] : null;
-    return RATIO_CHOICES.includes(v) ? v : 'auto';
-}
-
-function setRatioChoice(species, choice) {
-    updateUserData(RATIO_STORE, old => {
-        const all = Object.assign({}, old && typeof old === 'object' && !Array.isArray(old) ? old : {});
-        if (choice === 'auto') delete all[species];
-        else all[species] = choice;
-        return Object.keys(all).length ? all : undefined;
-    });
-}
-
-const ratioPart = v => (v === Infinity ? 'any' : String(v));
-function makeupShort(rule) {
-    return ratioKey(rule) === 'mixed' ? 'mixed' : `${ratioPart(rule.m)}♂ : ${ratioPart(rule.f)}♀`;
+// Animal Storage counts known so far: Map species -> { m, f }
+function storedCounts(zoo) {
+    const stored = new Map();
+    for (const sp of new Set(zoo.map(s => s.species).concat(HABITAT_SPECIES))) {
+        const v = getStorageCounts(sp);
+        if (v) stored.set(sp, v);
+    }
+    return stored;
 }
 
 function assignedCounts(model) {
@@ -254,7 +243,7 @@ function handlePick(ctx) {
         notice(p.error, 'warn');
         return;
     }
-    const name = p.name || placeName(model, p.hab);
+    const name = p.name || whereName(model, p.hab);
     const set = getAssignments(model).get(String(p.hab));
     if (set && set.has(species)) {
         notice(`${name} is already set aside for ${speciesName(species)}.`, 'info');
@@ -269,9 +258,75 @@ function handlePick(ctx) {
     renderAll();
 }
 
+// --------------------------------------------------- choose habitats
+
+function clearSearch() {
+    W.query = '';
+    if (W.el.search) W.el.search.value = '';
+}
+
+// hab: a habitat to open on (its species step), or null for the habitat list
+function startSetup(hab = null) {
+    W.setup = { habs: hab ? [String(hab)] : [], step: hab ? 'species' : 'habitats' };
+    W.picker = false;
+    W.picking = false;
+    W.scroll = {};
+    clearSearch();
+    breadcrumb('bw_setup_on');
+    if (W.gameShown) closeGamePanel();
+    openPickerData();
+    renderAll();
+}
+
+function setupStep(step) {
+    W.setup.step = step;
+    W.scroll = {};
+    clearSearch();
+    renderAll();
+}
+
+function toggleSetupHabitat(hab) {
+    const habs = W.setup.habs;
+    W.setup.habs = habs.includes(hab) ? habs.filter(x => x !== hab) : habs.concat(hab);
+    renderAll();
+}
+
+// the chosen habitats: [{ hab, name, species, animals }]
+function setupHabitats(model) {
+    const chosen = new Set(W.setup.habs);
+    return habitatChoices(model, getAssignments(model)).filter(r => chosen.has(r.hab));
+}
+
+function setupWhere(habs) {
+    return habs.length === 1 ? habs[0].name : `${habs.length} habitats`;
+}
+
+// add: set aside in every chosen habitat, else in none of them
+function setSetupSpecies(model, species, add) {
+    const habs = setupHabitats(model);
+    const assignments = getAssignments(model);
+    for (const x of habs) {
+        if ((assignments.get(x.hab) || new Set()).has(species) !== add) toggleAssignment(model, x.hab, species, x.name);
+    }
+    breadcrumb(add ? 'bw_setup_add' : 'bw_setup_remove');
+    if (add) notice(`${speciesName(species)} goes in ${setupWhere(habs)}.${assignmentStorage() === 'memory' ? ' Kept until you close the game.' : ''}`, 'ok');
+    else notice(`${speciesName(species)} taken off ${setupWhere(habs)}.`, 'info');
+    renderAll();
+}
+
+function openSpeciesProgramme(species) {
+    W.setup = null;
+    W.picking = false;
+    clearSearch();
+    chooseSpecies(species);
+    W.tab = 'programme';
+    renderAll();
+}
+
 // ------------------------------------------------------------ species
 
 function chooseSpecies(species) {
+    W.setup = null;
     const sp = species ? String(species) : null;
     if (sp === W.species) {
         W.picker = false;
@@ -281,11 +336,9 @@ function chooseSpecies(species) {
     W.species = sp;
     W.picker = false;
     W.picking = false;
-    W.query = '';
-    if (W.el.search) W.el.search.value = '';
+    clearSearch();
     W.prog = null;
     W.scroll = {};
-    if (sp) setPref(SPECIES_PREF, sp);
     const model = getKinModel();
     // a species with nothing set aside starts on its habitats
     const assigned = sp && model ? Array.from(getAssignments(model).values()).some(s => s && s.has(sp)) : false;
@@ -294,46 +347,6 @@ function chooseSpecies(species) {
     if (sp) requestStorageCounts([sp]);
     loadDest(false);
     renderAll();
-}
-
-// The species the game knows (its Zoopedia list), read once it has rows.
-async function loadCatalogue() {
-    if (W.catalogue && W.catalogue.length) return W.catalogue;
-    const [DS, Coll] = await Promise.all([gameModule('/js/common/core/DataStore.js'), gameModule('/js/common/data/DataStoreCollection.js')]);
-    if (!DS || !Coll || !Coll.DataStoreCollection) return null;
-    const c = new Coll.DataStoreCollection();
-    let rows = [];
-    try {
-        c.bindToContext(['Zoopedia', 'Animals']);
-        const get = (ctx, k) => {
-            try {
-                return DS.getValue(ctx, k);
-            }
-            catch (e) {
-                return undefined;
-            }
-        };
-        rows = (c.source || []).map(ctx => ({
-            key: Array.isArray(ctx) ? ctx[ctx.length - 1] : '',
-            id: get(ctx, 'id'),
-            isShoal: get(ctx, 'isShoal'),
-            isExhibitAnimal: get(ctx, 'isExhibitAnimal'),
-            isLocked: get(ctx, 'isLocked'),
-            isDlcLocked: get(ctx, 'isDlcLocked'),
-        }));
-    }
-    finally {
-        try {
-            c.dispose();
-        }
-        catch (e) {
-            // gone
-        }
-    }
-    const list = catalogueFromZoopedia(rows);
-    breadcrumb(list.length ? 'bw_catalogue' : 'bw_catalogue_empty');
-    if (list.length) W.catalogue = list;
-    return W.catalogue;
 }
 
 // Storage counts for every species the game knows, a chunk a tick (the
@@ -350,17 +363,15 @@ function askStored(list) {
 }
 
 function openPicker() {
-    W.picker = !W.picker || !W.species;
+    W.picker = !W.picker || !W.species || !!W.setup;
     W.picking = false;
+    if (W.setup) {
+        W.setup = null;
+        clearSearch();
+    }
     if (W.picker) {
         breadcrumb('bw_picker');
-        const model = getKinModel();
-        const zoo = speciesList(model).map(s => s.species);
-        askStored(zoo);
-        loadCatalogue().then(list => {
-            if (list && W.picker) askStored(zoo.concat(list));
-            queueRender();
-        }, () => {});
+        openPickerData();
     }
     renderAll();
     if (W.picker && W.el.search) setTimeout(() => {
@@ -388,28 +399,33 @@ function loadDest(force) {
 
 // ----------------------------------------------------------- programme
 
-function programmeHabitats(model, species) {
-    const ids = new Set();
-    for (const a of speciesAnimals(model, species)) if (a.hab) ids.add(String(a.hab));
-    const d = W.dest && W.dest.bySpecies && W.dest.bySpecies[species];
-    if (d) for (const [id, v] of Object.entries(d)) if (v && v.ok) ids.add(String(id));
-    for (const [hab, set] of getAssignments(model)) if (set && set.has(species)) ids.add(String(hab));
-    return Array.from(ids);
+function habitatsToDescribe(model, species) {
+    return programmeHabitats(model, species, W.dest, getAssignments(model));
 }
 
-// The board's programme key (kinboard.js programmeKey): deep results are
-// shared with the board under it.
-function programmeKey(p) {
-    const tk = tuningKey(getPref(TUNE_PREF));
-    return `${p.step}|${p.useTrade !== false}|${ratioChoice(p.species)}${tk ? `|${tk}` : ''}`;
-}
+const habsKey = habs => habs.slice().sort().join(',');
 
-// The board's programmeOptions, with the fine tuning (kinprogtune.js).
-function programmeOptions(p) {
-    const st = PROGRAMME_STEPS[p.step];
-    const o = { moveCost: st.cost, useTradeCentre: p.useTrade !== false, ratio: ratioChoice(p.species) };
-    if (st.outsider != null) o.outsiderCost = st.outsider;
-    return applyTuning(Object.assign(o, PROG_SEARCH), getPref(TUNE_PREF));
+// A habitat built, completed or found suitable after the game's facts were
+// read would be planned with a guessed room: when the habitats change and
+// one of them has no facts, the game is asked again and the plan redone.
+function refreshFacts(p, model) {
+    const habs = habitatsToDescribe(model, p.species);
+    const key = habsKey(habs);
+    if (key === p.factsFor) return;
+    p.factsFor = key;
+    const known = (p.info && p.info.habitats) || {};
+    if (!habs.some(hb => !known[hb])) return;
+    breadcrumb('bw_programme_facts_again');
+    requestSpeciesInfo(p.species, habs).then(info => {
+        if (W.prog !== p || !info || typeof info !== 'object' || info.error) return;
+        p.info = info;
+        p.infoError = '';
+        if (p.job) p.job.cancelled = true;
+        p.job = null;
+        p.resultKey = '';
+        p.problem = null;
+        queueRender();
+    }, e => reportError('mod', 'Breeding window: species facts failed', e, { silent: true }));
 }
 
 // The programme for the window's species: the game's facts first, then the
@@ -420,12 +436,16 @@ function ensureProgramme(model) {
     if (!species || !model) return null;
     let p = W.prog;
     if (!p || p.species !== species) {
-        p = W.prog = { species, state: 'loading', info: null, infoError: '', step: savedStep(), useTrade: true, sig: '', key: '', result: null, resultKey: '', job: null, error: null };
+        p = W.prog = { species, state: 'loading', info: null, infoError: '', step: savedProgStep(), useTrade: true, sig: '', key: '', result: null, resultKey: '', job: null, error: null, factsFor: '' };
         const ids = speciesAnimals(model, species).map(a => a.id);
         const ready = ids.length ? requestDestinations(ids).then(d => {
             if (d) W.dest = d;
         }, () => {}) : Promise.resolve();
-        ready.then(() => requestSpeciesInfo(species, programmeHabitats(getKinModel() || model, species))).then(info => {
+        ready.then(() => {
+            const habs = habitatsToDescribe(getKinModel() || model, species);
+            p.factsFor = habsKey(habs);
+            return requestSpeciesInfo(species, habs);
+        }).then(info => {
             if (W.prog !== p) return;
             p.info = info && typeof info === 'object' && !info.error ? info : null;
             p.infoError = info && info.error ? String(info.error) : '';
@@ -440,6 +460,7 @@ function ensureProgramme(model) {
         return p;
     }
     if (p.state !== 'ready') return p;
+    refreshFacts(p, model);
     const assignments = getAssignments(model);
     const key = `${programmeKey(p)}#${programmeSignature(model, species, assignments)}`;
     if (p.resultKey === key || (p.job && p.job.key === key)) return p;
@@ -447,7 +468,8 @@ function ensureProgramme(model) {
     const job = { key, progress: 0, cancelled: false };
     p.job = job;
     const options = programmeOptions(p);
-    const cpu = cpuOf();
+    // it starts by itself as the zoo changes: the gentle pace, the player plays meanwhile
+    const cpu = AUTO_CPU;
     const live = () => !job.cancelled && W.prog === p;
     breadcrumb('bw_programme_search');
     planProgrammeAsync(model, species, p.info || {}, destFor(model), {
@@ -519,7 +541,7 @@ function runDeep(p, model, { resume = null, auto = false } = {}) {
     startDeep({
         species: p.species, key: programmeKey(p), dkey: deepKey(opt), psig: problemSigFor(p, model), breeders: breedersOf(classic),
         model, info: p.info || {}, dest: destFor(model), assignments: getAssignments(model), options: programmeOptions(p),
-        warm: classic.moves, warmTotal: classic.score, resume, settings: deepSettings(opt), cpu: cpuOf(opt),
+        warm: classic.moves, warmTotal: classic.score, resume, settings: deepSettings(opt), cpu: auto ? AUTO_CPU : cpuOf(opt),
     });
     renderAll();
     return true;
@@ -600,7 +622,7 @@ function deepEl(p, model, view) {
     const e = view && view.kind === 'deep' ? view.entry : null;
     if (e) {
         const gain = gainText(e.r.score, e.warmTotal) || 'the same as Classic';
-        if (view.stale) return row('stale', h('div.PZ2QoL_bwDeepText', { text: `${other}The breeders changed since this deep search.` }), runBtn('Run again'));
+        if (view.stale) return row('stale', h('div.PZ2QoL_bwDeepText', { text: `${other}${staleDeepText(view)} Run it again to run its moves.` }), runBtn('Run again'));
         if (e.stopped && e.resume) return row('stopped', h('div.PZ2QoL_bwDeepText', { text: `${other}Deep stopped after ${e.done} of ${e.planned} starts · ${gain}.` }), runBtn('Continue', e.resume));
         return row('done', h('div.PZ2QoL_bwDeepText', { text: `${other}Deep · ${e.done} start${e.done === 1 ? '' : 's'} · ${gain}` }));
     }
@@ -623,6 +645,8 @@ function runProgramme() {
     if (!model || !p || !r) return;
     const blocked = planBlockedReason(model);
     if (blocked) return notice(blocked, 'warn');
+    const stale = staleDeepText(view);
+    if (stale) return notice(`${stale} Run the deep search again first (or switch the optimiser to Classic in More options).`, 'warn');
     const plan = runnableMoves(model, r.moves);
     if (!plan.length) return notice('Nothing to move: the groups are already the best the optimiser found.', 'ok');
     // a deep search of this species stops (its best is kept)
@@ -689,6 +713,17 @@ function ensureRoot() {
 
 function renderHead(model) {
     const el = W.el;
+    if (W.setup) {
+        const habs = setupHabitats(model);
+        if (W.setup.step !== 'species' || !habs.length) {
+            setText(el.speciesName, 'Choose habitats');
+            setText(el.speciesMeta, habs.length ? `${habs.length} ticked` : 'tick the ones to set up');
+            return;
+        }
+        setText(el.speciesName, trunc(setupWhere(habs), 26));
+        setText(el.speciesMeta, habs.length === 1 ? `${habs[0].species.length} species` : trunc(habs.map(x => x.name).join(', '), 40));
+        return;
+    }
     if (!W.species) {
         setText(el.speciesName, 'Choose a species');
         setText(el.speciesMeta, '');
@@ -709,8 +744,9 @@ function renderHead(model) {
 function renderTabs(model) {
     const el = W.el;
     clear(el.tabs);
-    setClass(el.tabs, 'hidden', W.picker || !W.species);
-    if (W.picker || !W.species) return;
+    const hide = W.picker || !W.species || !!W.setup;
+    setClass(el.tabs, 'hidden', hide);
+    if (hide) return;
     const n = Array.from(getAssignments(model).values()).filter(s => s && s.has(W.species)).length;
     let autoText = 'Auto mode';
     if (W.autoMod && W.autoMod.autoButtonInfo) {
@@ -750,12 +786,13 @@ function renderAll() {
     try {
         const model = getKinModel();
         renderHead(model);
-        setClass(W.el.searchRow, 'hidden', !W.picker);
+        setClass(W.el.searchRow, 'hidden', !(W.picker || W.setup));
         renderTabs(model);
         const body = W.el.body;
         clear(body);
         W.boxes = {};
-        if (W.picker || !W.species) body.appendChild(pickerEl(model));
+        if (W.setup) body.appendChild(setupEl(model));
+        else if (W.picker || !W.species) body.appendChild(pickerEl(model));
         else if (W.tab === 'programme') body.appendChild(programmeEl(model));
         else if (W.tab === 'auto') body.appendChild(autoEl(model));
         else body.appendChild(habitatsEl(model));
@@ -797,13 +834,8 @@ function pickerEl(model) {
     const box = scrollBox('picker');
     const c = box.content;
     const zoo = speciesList(model);
-    const stored = new Map();
-    const known = new Set(zoo.map(s => s.species).concat(W.catalogue || []));
-    for (const sp of known) {
-        const v = getStorageCounts(sp);
-        if (v) stored.set(sp, v);
-    }
-    const ch = speciesChoices({ zoo, stored, catalogue: W.catalogue || [], assigned: assignedCounts(model), query: W.query, nameOf: speciesName });
+    const stored = storedCounts(zoo);
+    const ch = speciesChoices({ zoo, stored, catalogue: HABITAT_SPECIES, assigned: assignedCounts(model), query: W.query, nameOf: speciesName });
     const rowEl = r => {
         const bits = [];
         if (r.zoo) bits.push(`${countsText(r.males, r.females) || r.zoo} in the zoo`);
@@ -821,12 +853,93 @@ function pickerEl(model) {
     if (ch.other.length) c.appendChild(section('Every other species', ...ch.other.map(rowEl), ch.more ? h('div.PZ2QoL_bwHint', { text: `${ch.more} more: type more of the name.` }) : null));
     if (!ch.zoo.length && !ch.stored.length && !ch.other.length) {
         c.appendChild(empty(W.query ? 'No species found' : 'No animals yet',
-            W.query ? (W.catalogue ? 'No species name matches the search.' : 'Only the species in your zoo can be searched until the game\'s Zoopedia list is read.') : 'Type a species name to search every species the game knows.'));
+            W.query ? 'No species name matches the search.' : 'Type a species name to search every species the game knows.'));
     }
     else if (!W.query) {
-        c.appendChild(h('div.PZ2QoL_bwHint', { text: W.catalogue ? 'Type to search every species the game knows.' : 'Type to search.' }));
+        c.appendChild(h('div.PZ2QoL_bwHint', { text: 'Type to search every species the game knows.' }));
     }
-    return finishScroll(box, 'picker');
+    return h('div.PZ2QoL_bwPane', null,
+        h('div.PZ2QoL_bwActions', null,
+            btn('Choose habitats', null, () => startSetup(), { cls: 'primary.wide', title: 'Tick habitats in a list, then add the species that go in them' })),
+        finishScroll(box, 'picker'));
+}
+
+// ---------------------------------------------------- choose habitats
+
+function setupHabitatsEl(model) {
+    const n = W.setup.habs.length;
+    const q = W.query.trim().toLowerCase();
+    const rows = habitatChoices(model, getAssignments(model)).filter(r => !q || r.name.toLowerCase().includes(q));
+    const box = scrollBox('setupHabs');
+    const c = box.content;
+    for (const r of rows) {
+        const meta = [r.species.length ? r.species.slice(0, 2).map(s => trunc(speciesName(s), 18)).join(', ') + (r.species.length > 2 ? '…' : '') : 'nothing set aside'];
+        meta.push(r.animals ? `${r.animals} animal${r.animals === 1 ? '' : 's'}` : 'empty');
+        c.appendChild(h(`div.PZ2QoL_bwPick${W.setup.habs.includes(r.hab) ? '.on' : ''}`, {
+            'data-hab': r.hab,
+            onClick: guard('Choose habitat', () => toggleSetupHabitat(r.hab)),
+        },
+            h('div.PZ2QoL_bwPickName', { text: trunc(r.name, 30) }),
+            h('div.PZ2QoL_bwPickMeta', { text: meta.join(' · ') })));
+    }
+    if (!rows.length) c.appendChild(h('div.PZ2QoL_bwHint', { text: q ? 'No habitat name matches the search.' : 'No habitats found in this zoo yet.' }));
+    return h('div.PZ2QoL_bwPane', null,
+        h('div.PZ2QoL_bwActions', null,
+            btn(n ? `Next: species for ${n} habitat${n === 1 ? '' : 's'}` : 'Tick one or more habitats', null, () => { if (n) setupStep('species'); },
+                { cls: `primary.wide${n ? '' : '.disabled'}`, title: 'Add the species that go in the ticked habitats' })),
+        finishScroll(box, 'setupHabs'));
+}
+
+// n: habitats chosen; r.count: how many of them have the species
+function setupRow(model, r, n) {
+    const meta = [];
+    if (r.count && r.count < n) meta.push(`in ${r.count} of ${n}`);
+    const here = countsText(r.here.m, r.here.f, r.here.young);
+    if (here) meta.push(`${here} here now`);
+    if (r.zoo) meta.push(`${r.zoo} in the zoo`);
+    if (r.stored) meta.push(`${r.stored} in storage`);
+    const add = h('div.PZ2QoL_bwIconBtn.add', {
+        title: n === 1 ? `${r.name} goes here` : `${r.name} goes in all ${n}`,
+        onClick: guard('Add species', () => setSetupSpecies(model, r.species, true)),
+    }, h('div.PZ2QoL_bwPlusH'), h('div.PZ2QoL_bwPlusV'));
+    const remove = h('div.PZ2QoL_bwIconBtn.remove', {
+        title: n === 1 ? `Take ${r.name} off this habitat` : `Take ${r.name} off all ${n}`,
+        onClick: guard('Remove species', () => setSetupSpecies(model, r.species, false)),
+    }, crossMark());
+    return h(`div.PZ2QoL_bwHab.${r.count ? 'assigned' : here ? 'living' : 'other'}`, { 'data-species': r.species },
+        h('div.PZ2QoL_bwHabMark'),
+        h('div.PZ2QoL_bwHabText', null,
+            h('div.PZ2QoL_bwHabName', { text: trunc(r.name, 30) }),
+            h('div.PZ2QoL_bwHabMeta', { text: meta.join(' · ') || 'not in your zoo or storage' })),
+        r.count ? btn('Plan', null, () => openSpeciesProgramme(r.species), { cls: 'small', title: `Plan which ${r.name} go into its habitats` }) : null,
+        r.count < n ? add : null,
+        r.count ? remove : null);
+}
+
+function setupSpeciesEl(model) {
+    const habs = setupHabitats(model);
+    const n = habs.length;
+    const zoo = speciesList(model);
+    const rows = habitatSpeciesRows({
+        habs: habs.map(x => x.hab), model, assignments: getAssignments(model), zoo, stored: storedCounts(zoo), catalogue: HABITAT_SPECIES, query: W.query, nameOf: speciesName,
+    });
+    const box = scrollBox('setup');
+    const c = box.content;
+    c.appendChild(section(n === 1 ? 'Goes here' : `Goes in these ${n}`,
+        rows.ticked.length ? rows.ticked.map(r => setupRow(model, r, n))
+            : h('div.PZ2QoL_bwHint', { text: 'Nothing yet. Add a species below.' })));
+    const add = [...rows.living, ...rows.yours, ...rows.other].map(r => setupRow(model, r, n));
+    if (rows.more) add.push(h('div.PZ2QoL_bwHint', { text: `${rows.more} more: type more of the name.` }));
+    if (!W.query) add.push(h('div.PZ2QoL_bwHint', { text: 'Type above to search every species the game knows.' }));
+    c.appendChild(section('Add a species', ...add));
+    return h('div.PZ2QoL_bwPane', null,
+        h('div.PZ2QoL_bwActions', null,
+            btn('‹ Habitats', null, () => setupStep('habitats'), { cls: 'primary.wide', title: 'Back to the habitat list (Esc)' })),
+        finishScroll(box, 'setup'));
+}
+
+function setupEl(model) {
+    return W.setup.step === 'species' && W.setup.habs.length ? setupSpeciesEl(model) : setupHabitatsEl(model);
 }
 
 // ------------------------------------------------------- Habitats tab
@@ -855,7 +968,7 @@ function habRow(model, r, kind) {
                 notice(`${r.name}: no longer set aside for ${speciesName(W.species)}.`, 'info');
                 renderAll();
             }),
-        }, h('div.PZ2QoL_kpCloseX.a'), h('div.PZ2QoL_kpCloseX.b'))
+        }, crossMark())
         : h('div.PZ2QoL_bwIconBtn.add', {
             title: `Set aside for ${speciesName(W.species)}`,
             onClick: guard('Add habitat', () => {
@@ -919,12 +1032,19 @@ function statTile(key, label, before, after, better, fmt = v => String(v)) {
             h('span.PZ2QoL_kbStatAfter', { text: a == null ? '–' : fmt(a) })));
 }
 
+// Who is moving animals (kinmoves runPlan's owner), for another species' tab.
+function runOwnerText(owner) {
+    if (owner === 'window') return W.ranFor ? `The plan for ${speciesName(W.ranFor)} is running` : 'A plan from this window is running';
+    if (owner === 'autopilot') return 'Auto mode is moving animals';
+    if (owner === 'undo') return 'Auto mode is undoing its last run';
+    return 'A plan from the Species board is running';
+}
+
 function runEl(model) {
     const run = getPlanRun();
-    if (!(run.running || (run.finished && W.ranFor === W.species && run.owner === 'window'))) return null;
-    if (run.owner !== 'window' && run.running) {
-        return h('div.PZ2QoL_bwRun.other', null, h('div.PZ2QoL_bwRunText', { text: run.owner === 'autopilot' ? 'Auto mode is moving animals; Run waits for it.' : 'A plan from the Species board is running; Run waits for it.' }));
-    }
+    const here = run.owner === 'window' && W.ranFor === W.species;
+    if (!(run.running || (run.finished && here))) return null;
+    if (run.running && !here) return h('div.PZ2QoL_bwRun.other', null, h('div.PZ2QoL_bwRunText', { text: `${runOwnerText(run.owner)}; Run waits for it.` }));
     const pct = run.total ? Math.round((run.done / run.total) * 100) : 0;
     const skipped = run.log.filter(x => !x.ok).length;
     const text = run.running
@@ -941,8 +1061,10 @@ function programmeEl(model) {
     const wrap = h('div.PZ2QoL_bwPane');
     const species = W.species;
     const name = speciesName(species);
-    if (!speciesAnimals(model, species).length) {
-        wrap.appendChild(empty(`No ${trunc(name, 24)} in the zoo`, 'The programme groups the animals you have. Bring some from Animal Storage, or set their habitats aside first.',
+    // young can't breed: with no adults out there is nothing to group yet
+    const young = speciesAnimals(model, species).filter(a => a.juv && a.alive !== false).length;
+    if (!speciesAnimals(model, species).some(a => !a.juv && a.alive !== false)) {
+        wrap.appendChild(empty(`No adult ${trunc(name, 24)} in the zoo`, `The programme groups the adults you have: bring them from Animal Storage and it places the best ones in their habitats.${young ? ' Young stay where they are until they grow up.' : ''}`,
             btn('Habitats', null, () => { W.tab = 'habitats'; renderAll(); }, { cls: 'small' })));
         const row = fetchRow(model, species, { onError: t => notice(t, 'warn') });
         if (row) wrap.appendChild(h('div.PZ2QoL_bwFetch', null, row));
@@ -959,19 +1081,24 @@ function programmeEl(model) {
     // settings: make-up, the slider, the trade centre
     const choice = ratioChoice(species);
     const rule = r && r.rule ? r.rule : groupRule(p.info || {}, choice);
+    const fixed = makeupFixed(rule);
+    const auto = fixed || choice === 'auto';
     const cycle = d => {
-        const i = RATIO_CHOICES.indexOf(choice);
-        setRatioChoice(species, RATIO_CHOICES[(i + d + RATIO_CHOICES.length) % RATIO_CHOICES.length]);
+        stepRatioChoice(species, d);
         breadcrumb('bw_programme_ratio');
         renderAll();
     };
     wrap.appendChild(h('div.PZ2QoL_bwControls', null,
-        h(`div.PZ2QoL_kbRatio${choice === 'auto' ? '' : '.mine'}`, { 'data-ratio': choice, title: 'Group make-up (the same choice as on the Species board, kept for this species in this zoo)' },
-            h('div.PZ2QoL_kbRatioArrow.prev', { onClick: guard('Make-up', () => cycle(-1)) }, h('span', { text: '‹' })),
+        h(`div.PZ2QoL_kbRatio${auto ? '' : '.mine'}${fixed ? '.fixed' : ''}`, {
+            'data-ratio': fixed ? 'auto' : choice,
+            title: fixed ? "Only the leader breeds in this species (the game's rule): there is no make-up to choose."
+                : 'Group make-up (the same choice as on the Species board, kept for this species in this zoo)',
+        },
+            fixed ? null : h('div.PZ2QoL_kbRatioArrow.prev', { onClick: guard('Make-up', () => cycle(-1)) }, h('span', { text: '‹' })),
             h('div.PZ2QoL_kbRatioText', null,
-                h('span.PZ2QoL_kbRatioLabel', { text: choice === 'auto' ? 'Make-up (auto)' : 'Make-up' }),
+                h('span.PZ2QoL_kbRatioLabel', { text: fixed ? 'Make-up (the game)' : auto ? 'Make-up (auto)' : 'Make-up' }),
                 h('span.PZ2QoL_kbRatioValue', { text: makeupShort(rule) })),
-            h('div.PZ2QoL_kbRatioArrow.next', { onClick: guard('Make-up', () => cycle(1)) }, h('span', { text: '›' }))),
+            fixed ? null : h('div.PZ2QoL_kbRatioArrow.next', { onClick: guard('Make-up', () => cycle(1)) }, h('span', { text: '›' }))),
         h('div.PZ2QoL_kbSteps.PZ2QoL_bwSteps', null,
             h('span.PZ2QoL_kbStepEnd', { text: 'Fewer moves' }),
             PROGRAMME_STEPS.map((st, i) => h(`div.PZ2QoL_kbStep${i === p.step ? '.on' : ''}`, {
@@ -979,7 +1106,7 @@ function programmeEl(model) {
                 title: st.label,
                 onClick: guard('Programme step', () => {
                     p.step = i;
-                    setPref(PROG_STEP_PREF, i === PROGRAMME_DEFAULT_STEP ? undefined : i);
+                    saveProgStep(i);
                     renderAll();
                 }),
             }, h('div.PZ2QoL_kbStepDot'))),
@@ -1026,21 +1153,22 @@ function programmeEl(model) {
     for (const m of r.moves.slice(0, MOVES_SHOWN)) {
         const x = model.animals.get(String(m.id));
         if (!x) continue;
-        const from = x.hab ? placeName(model, x.hab) : x.lt === 'trade' ? placeName(model, TRADE) : 'Elsewhere';
+        const from = whereName(model, homeOf(x));
         const runs = plan.some(y => y.id === x.id);
         c.appendChild(h(`div.PZ2QoL_bwMove${runs ? '' : '.held'}${m.to === TRADE ? '.out' : ''}`, { 'data-id': String(x.id) },
             h(`div.PZ2QoL_bwSex.sex_${x.sex}`, { text: sexSymbol(x.sex) }),
             h('div.PZ2QoL_bwMoveText', null,
                 h('div.PZ2QoL_bwMoveName', { text: trunc(x.name || `Animal ${x.id}`, 22) + (runs ? '' : ' · stays (pregnant or busy)') }),
-                h('div.PZ2QoL_bwMoveWhere', { text: `${trunc(from, 18)} → ${trunc(placeName(model, m.to), 18)}` }))));
+                h('div.PZ2QoL_bwMoveWhere', { text: `${trunc(from, 18)} → ${trunc(whereName(model, m.to), 18)}` }))));
     }
     if (r.moves.length > MOVES_SHOWN) c.appendChild(h('div.PZ2QoL_bwHint', { text: `${r.moves.length - MOVES_SHOWN} more moves.` }));
     wrap.appendChild(finishScroll(box, 'moves'));
     const running = getPlanRun().running;
+    const stale = staleDeepText(view);
     wrap.appendChild(h('div.PZ2QoL_bwFoot', null,
         btn(plan.length ? `Run ${plan.length} move${plan.length === 1 ? '' : 's'}` : 'Nothing to move', null, runProgramme, {
-            cls: `primary.wide${plan.length && !busy && !running ? '' : '.disabled'}`,
-            title: busy ? 'The optimiser is still working' : running ? 'A plan is running' : 'Move the animals one at a time, each confirmed by the game',
+            cls: `primary.wide${plan.length && !busy && !running && !stale ? '' : '.disabled'}`,
+            title: busy ? 'The optimiser is still working' : running ? 'A plan is running' : stale ? `${stale} Run the deep search again first.` : 'Move the animals one at a time, each confirmed by the game',
         })));
     return wrap;
 }
@@ -1106,10 +1234,13 @@ function stepper(k, value, words) {
 }
 
 function setTune(key, id) {
-    const tune = Object.assign({}, getPref(TUNE_PREF) || {});
-    if (id === 'default') delete tune[key];
-    else tune[key] = id;
-    setPref(TUNE_PREF, Object.keys(tune).length ? tune : undefined);
+    // a merge, replayed on the store's latest: the other page's tuning keys stay
+    updatePref(TUNE_PREF, old => {
+        const tune = Object.assign({}, old && typeof old === 'object' && !Array.isArray(old) ? old : {});
+        if (id === 'default') delete tune[key];
+        else tune[key] = id;
+        return Object.keys(tune).length ? tune : undefined;
+    });
     breadcrumb('bw_tune');
     tuningChanged();
 }
@@ -1150,7 +1281,7 @@ function optionsEl(p, r) {
                 optRow('Stop early', '', stepper('patience', cu.patience, v => (v > 0 ? `after ${v} quiet round${v === 1 ? '' : 's'}` : 'off')))));
         }
     }
-    engine.push(optRow('CPU use', 'How much of each frame the search takes. Gentler is smoother on slower PCs, and slower to finish.',
+    engine.push(optRow('CPU use', "How much of each frame the deep searches you start here take. Gentler is smoother on slower PCs, and slower to finish. Auto mode's runs and the searches that start by themselves always go gently, so you can play while they run.",
         seg(CPU_ORDER.map(k => ({ id: k, label: CPU_STEPS[k].label })), opt.cpu, v => setOpt({ cpu: v }), 'cpu')));
     c.appendChild(section('Optimiser', ...engine));
     // this species' plan
@@ -1194,7 +1325,7 @@ function optionsEl(p, r) {
 
 function autoHelpers() {
     return {
-        compact: true, btn, switchEl, guard, notice, renderAll, queueRender, makeScroll, restoreScroll, statTile, placeName,
+        compact: true, btn, switchEl, guard, notice, renderAll, queueRender, makeScroll, restoreScroll, statTile, placeName: whereName,
         close: () => {
             W.tab = 'programme';
             renderAll();
@@ -1234,15 +1365,6 @@ function autoEl(model) {
 }
 
 // --------------------------------------------------------------- tick
-
-function visibleBox(node) {
-    if (!node) return null;
-    for (let n = node; n && n != document.body; n = n.parentNode) {
-        if (n.classList && (n.classList.contains('hidden') || n.classList.contains('displayNone'))) return null;
-    }
-    const r = node.getBoundingClientRect();
-    return r.width > 0 && r.height > 0 ? r : null;
-}
 
 function tick() {
     if (!W.open) return;
@@ -1290,7 +1412,7 @@ function subscribe() {
     W.unsub.push(onKinSettings(() => queueRender()));
     W.unsub.push(onAssignments(() => queueRender()));
     W.unsub.push(onStorageCounts(() => {
-        if (W.picker || W.tab === 'habitats') queueRender();
+        if (W.picker || W.setup || W.tab === 'habitats') queueRender();
         else renderHead(getKinModel());
     }));
     W.unsub.push(onPlanRun(() => queueRender()));
@@ -1316,8 +1438,8 @@ function unsubscribe() {
 
 // ---------------------------------------------------------------- api
 
-// Opens the window. opts: { species }; without it: the species of the game
-// info panel on screen, else the last one.
+// Opens the window. opts: { species } opens on that species; without it,
+// on choosing a habitat: the one on the game's info panel, if one is shown.
 export function openBreedingWindow(opts = {}) {
     try {
         if (!isHudPage()) return false;
@@ -1325,12 +1447,8 @@ export function openBreedingWindow(opts = {}) {
         ensureRoot();
         closeOtherPanels('breeding');
         const model = getKinModel();
-        let species = opts && opts.species != null ? String(opts.species) : null;
-        if (!species && W.gameShown && W.lastCtx) species = speciesOfPanel(W.lastCtx, model);
-        if (!species && !W.species) {
-            const saved = getPref(SPECIES_PREF);
-            if (typeof saved === 'string' && saved) species = saved;
-        }
+        const species = opts && opts.species != null ? String(opts.species) : null;
+        const shown = !species && W.gameShown && W.lastCtx ? pickedHabitat(W.lastCtx, model) : null;
         // the game's info panel gives way
         if (W.gameShown) closeGamePanel();
         const wasOpen = W.open;
@@ -1341,13 +1459,14 @@ export function openBreedingWindow(opts = {}) {
         requestKinScan('window');
         markKinActive();
         loadAuto();
-        if (species && species !== W.species) chooseSpecies(species);
+        if (!species) {
+            startSetup(shown && !shown.error ? shown.hab : null);
+            return true;
+        }
+        if (species !== W.species) chooseSpecies(species);
         else {
-            if (!W.species) W.picker = true;
-            if (W.species) {
-                requestStorageCounts([W.species], { force: !wasOpen });
-                loadDest(false);
-            }
+            requestStorageCounts([W.species], { force: !wasOpen });
+            loadDest(false);
             renderAll();
         }
         if (W.picker) openPickerData();
@@ -1359,15 +1478,10 @@ export function openBreedingWindow(opts = {}) {
     }
 }
 
-// the picker's data, when the window opens on it
+// the picker's data: storage counts for the zoo's species, then every other one
 function openPickerData() {
-    const model = getKinModel();
-    const zoo = speciesList(model).map(s => s.species);
-    askStored(zoo);
-    loadCatalogue().then(list => {
-        if (list && W.picker) askStored(zoo.concat(list));
-        queueRender();
-    }, () => {});
+    const zoo = speciesList(getKinModel()).map(s => s.species);
+    askStored(zoo.concat(HABITAT_SPECIES));
 }
 
 export function closeBreedingWindow() {
@@ -1375,7 +1489,9 @@ export function closeBreedingWindow() {
         W.open = false;
         W.picking = false;
         W.picker = false;
+        W.setup = null;
         W.pickCtx = null;
+        W.yieldPending = false;
         W.storedQueue = [];
         if (W.prog && W.prog.job) W.prog.job.cancelled = true;
         W.prog = null;
@@ -1413,7 +1529,9 @@ export function installBreedingWindow() {
         try {
             e.preventDefault();
             e.stopPropagation();
-            if (W.picking) stopPicking();
+            if (W.setup && W.setup.step === 'species') setupStep('habitats');
+            else if (W.setup) closeBreedingWindow();
+            else if (W.picking) stopPicking();
             else if (W.picker && W.species) {
                 W.picker = false;
                 renderAll();

@@ -179,8 +179,9 @@ function enqueue(line) {
     schedule();
 }
 
-// The one call every feature uses. area: desk | lister | peek | pricing |
-// ui; event: one word; data: a flat object (or a value). Never throws.
+// The one call every feature uses. area: the feature, one word (desk,
+// lister, market, ui...); event: one word; data: a flat object (or a
+// value). Never throws.
 export function dlog(area, event, data) {
     if (enabled === false) return;
     try {
@@ -206,8 +207,10 @@ export function setLogState(state) {
         if (state === 'on' || state === true) {
             const was = enabled;
             enabled = true;
+            // the early lines are capped already (EARLY_MAX); the rate limit is for live bursts
             if (was !== true && early.length) {
-                for (const l of early) enqueue(l);
+                queue.push(...early);
+                schedule();
             }
             early = [];
         }
@@ -288,7 +291,6 @@ export function logPriceDecision(where, id, advice, extra = {}) {
 // --------------------------------------------------------------- panel
 
 let panel = null; // { root, list, info, open, offset, area }
-const AREAS = ['', 'desk', 'lister', 'peek', 'pricing', 'ui'];
 const PANEL_LINES = 36;
 
 // inline styles (Gameface needs display set explicitly; no stylesheet to load)
@@ -375,7 +377,8 @@ export function showLogPanel(open = true) {
             const info = el('div', 'PZ2QoL_dlogInfo', '');
             panel = { root, list: null, info, open: false, offset: 0, area: '', areaBtn: null };
             panel.areaBtn = button('Area: all', () => {
-                panel.area = AREAS[(AREAS.indexOf(panel.area) + 1) % AREAS.length];
+                const areas = [''].concat(Array.from(new Set(ring.map(e => e.area))).sort());
+                panel.area = areas[(areas.indexOf(panel.area) + 1) % areas.length];
                 panel.offset = 0;
                 renderPanel();
             });

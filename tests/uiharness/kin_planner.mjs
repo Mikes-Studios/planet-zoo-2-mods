@@ -298,10 +298,26 @@ export async function hud(page, ctx) {
     await ctx.shot(page, 'kp_5_settings');
     facts.settings = await page.evaluate(() => ({
         switches: [...document.querySelectorAll('.PZ2QoL_kpPopover.open .PZ2QoL_kpSwitchLabel')].map(n => n.innerText),
-        thresholds: [...document.querySelectorAll('.PZ2QoL_kpPopover.open .PZ2QoL_kpSegItem:not([data-toast-level]):not([data-boxed-after])')].map(n => n.innerText + (n.classList.contains('on') ? '*' : '')),
+        thresholds: [...document.querySelectorAll('.PZ2QoL_kpPopover.open [data-setting="closeKinship"] .PZ2QoL_kpSegItem')].map(n => n.innerText + (n.classList.contains('on') ? '*' : '')),
     }));
     facts.layoutSettings = await layoutFacts(page);
     layoutProblems('settings', facts.layoutSettings, problems);
+    // the popover ends inside the planner and the wheel reaches its last setting
+    await page.locator('.PZ2QoL_kpPopover.open .PZ2QoL_kpViewport').hover();
+    for (let i = 0; i < 30; i++) await page.mouse.wheel(0, 300);
+    await page.waitForTimeout(150);
+    facts.settingsFit = await page.evaluate(() => {
+        const pop = document.querySelector('.PZ2QoL_kpPopover.open').getBoundingClientRect();
+        const root = document.querySelector('.PZ2QoL_kp').getBoundingClientRect();
+        const rows = document.querySelectorAll('.PZ2QoL_kpPopover.open .PZ2QoL_kpSwitch');
+        const last = rows[rows.length - 1].getBoundingClientRect();
+        return { popBottom: Math.round(pop.bottom), rootBottom: Math.round(root.bottom), lastBottom: Math.round(last.bottom), bar: !!document.querySelector('.PZ2QoL_kpPopover.open .PZ2QoL_kpBar.show') };
+    });
+    await ctx.shot(page, 'kp_5b_settings_end');
+    if (facts.settingsFit.popBottom > facts.settingsFit.rootBottom) problems.push(`settings popover runs past the planner: ${JSON.stringify(facts.settingsFit)}`);
+    if (facts.settingsFit.lastBottom > facts.settingsFit.popBottom) problems.push(`settings: the last setting is out of reach: ${JSON.stringify(facts.settingsFit)}`);
+    for (let i = 0; i < 30; i++) await page.mouse.wheel(0, -300);
+    await page.waitForTimeout(150);
     // other features may add switches: check the ones this scenario knows are there
     for (const label of ['New inbreeding risks', 'Close kin too', 'Covered pairs', 'Pair bonds count as protection', "Species names in the game's language"]) {
         if (!facts.settings.switches.includes(label)) problems.push(`settings switch "${label}" missing: ${facts.settings.switches}`);
@@ -311,9 +327,9 @@ export async function hud(page, ctx) {
     for (const label of ['Boxed with nowhere to go', 'Trade centre too']) {
         if (!facts.settings.switches.includes(label)) problems.push(`settings switch "${label}" missing: ${facts.settings.switches}`);
     }
-    facts.settings.boxedAfter = await page.evaluate(() => [...document.querySelectorAll('.PZ2QoL_kpPopover.open .PZ2QoL_kpSegItem[data-boxed-after]')].map(n => n.innerText + (n.classList.contains('on') ? '*' : '')));
+    facts.settings.boxedAfter = await page.evaluate(() => [...document.querySelectorAll('.PZ2QoL_kpPopover.open [data-setting="boxedAfterS"] .PZ2QoL_kpSegItem')].map(n => n.innerText + (n.classList.contains('on') ? '*' : '')));
     if (!facts.settings.boxedAfter.includes('10 s*')) problems.push(`boxed delay: ${facts.settings.boxedAfter}`);
-    await click(page.locator('.PZ2QoL_kpPopover .PZ2QoL_kpSegItem[data-boxed-after="30"]'));
+    await click(page.locator('.PZ2QoL_kpPopover [data-setting="boxedAfterS"] [data-value="30"]'));
     await page.waitForTimeout(200);
     facts.settings.boxedAfterS = await page.evaluate(async () => (await import('/js/mods/pz2qol/kin.js')).getKinSettings().boxedAfterS);
     if (facts.settings.boxedAfterS !== 30) problems.push(`boxed delay click: ${facts.settings.boxedAfterS}`);

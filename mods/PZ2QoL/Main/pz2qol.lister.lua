@@ -28,8 +28,8 @@
 --  Lua's reads stay the fallback when the page does not report.
 --  Each selected animal's verdict (trade, quick trade, quick release,
 --  rehome) goes to the page with its result; a job in mode "check" (the
---  desk's Check storage) stops there and never sends. The vanilla quick
---  handlers are wrapped to log only (Phase 0b). docs/PLAN-desk-quick-release.md.
+--  desk's Check storage) stops there and never sends
+--  (docs/PLAN-desk-quick-release.md).
 --  A job in mode "unlist" (the desk's My listings, docs/DESIGN-reprice.md)
 --  takes listed animals off the market: select it, then the game's own
 --  Cancel (AnimalStorage_Cancel("Trade") -> StorageUICancelAnimalAuction(),
@@ -57,6 +57,11 @@ Lister.nVersion = 1          -- protocol version (the job's "v1")
 Lister.nListingRequest = 42  -- request type of a listing (seen in game)
 Lister.nGuidType = 2         -- StorageGetIDAndAIDType's type for most storage animals
 Lister.tTypeMarked = {}       -- other id types seen (traced once each)
+-- Stored animals seen listed this game session: the game's bForSale (what
+-- Kin's storage reads and the storage counts get) stays false for the
+-- player's own listings. guid token -> true, row key -> guid token.
+Lister.tListedGuids = {}
+Lister.tListedKeys = {}
 Lister.nServerTimeout = 10   -- s to wait for the game's other server requests
 Lister.nRequestsGrace = 2    -- s RequestsInProgress alone is waited on (it may count background polls; guess)
 Lister.nSelectTimeout = 5    -- s to wait for the selection's data
@@ -75,6 +80,7 @@ Lister.nWatchResend = 1      -- s without a report before the watch is asked for
 Lister.nPaceMin = 1000       -- ms: the pause after every server request
 Lister.nPaceMax = 10000
 Lister.nPaceDefault = 3000
+Lister.nOffsetLimit = 0.5   -- the page's OFFSET_LIMIT (lister.js): the most a price offset moves a price
 Lister.nCheckPaceMin = 150   -- ms: a check run's pause between selects (nothing is sent)
 Lister.nCheckClearAgain = 0.5 -- s after a check run ends: the selection is cleared once more
 Lister.nCheckClearAt = nil
@@ -86,6 +92,20 @@ Lister.nCheckClearAt = nil
 -- call, and the storage list decides each result. A quick run STOPS on
 -- anything unexpected (permanent: an exception to skip-and-carry-on); only
 -- a "not allowed now" (or a passing busy / changed selection) skips.
+-- The game's listing problems that never pass (AnimalList_Problem_<key>):
+-- a Frontier zoo's animal never goes on the market (NoBirthZoo, Y:
+-- 2026-10-19), but Quick trade takes it.
+Lister.tLastingProblems = { NoBirthZoo = true }
+
+Lister._LastingProblem = function(self, tKeys)
+	for _, sKey in ipairs(tKeys) do
+		if self.tLastingProblems[sKey] then
+			return true
+		end
+	end
+	return false
+end
+
 Lister.tQuickModes = {
 	quicktrade = { sNative = "StorageUIQuickTradeAnimals", sFlag = "bTrade", sWhy = "sTradeReason", sDone = "traded", sVerb = "Quick-traded", sSending = "Quick trading it." },
 	release = { sNative = "StorageUIReleaseAnimalsToWild", sFlag = "bRelease", sWhy = "sReleaseReason", sDone = "released", sVerb = "Released", sSending = "Releasing it to the wild." },
@@ -113,14 +133,6 @@ Lister.nUnlistErrWait = 5    -- s: a database error during the wait shortens it 
 -- select" at the next run's first animal (a take-off, then a quick trade)
 Lister.nLastSelFresh = 60
 Lister.tLastSel = nil
--- Phase 0b (docs/PLAN-desk-quick-release.md 2): the vanilla Quick trade /
--- Quick release handlers are wrapped to log only, then call the game's own.
-Lister.nProbeErrWindow = 10  -- s after one whose server errors are logged
-Lister.nProbeWatch = 60      -- s the storage list is watched for its rows to leave
-Lister.nProbePoll = 0.25     -- s between two looks
-Lister.tProbe = nil          -- the one being watched
-Lister.tProbeLast = nil
-Lister.nProbes = 0
 
 Lister.oStorageMode = nil    -- the active AnimalStorageHubMode, if any
 Lister.tRun = nil            -- the run in progress
@@ -467,7 +479,8 @@ local function idToken(bOk, nID, nType)
 	if not bOk then
 		return nil, false, "error"
 	end
-	local s, bLossy = nil, false
+	local s
+	local bLossy = false
 	local sType = type(nID)
 	if sType == "number" then
 		if math.type(nID) == "integer" then
@@ -542,10 +555,25 @@ local function guidOf(sKey)
 	return idToken(probe(sKey))
 end
 
+local function noteListing(sKey, sGuid)
+	if sGuid ~= nil then
+		Lister.tListedGuids[sGuid] = true
+		if sKey ~= nil then
+			Lister.tListedKeys[sKey] = sGuid
+		end
+	end
+end
+
+-- A storage guid (as the game gives it) seen listed this session.
+Lister.IsListedGuid = function(self, guid)
+	local sGuid = idToken(true, guid, self.nGuidType)
+	return sGuid ~= nil and self.tListedGuids[sGuid] == true
+end
+
 -- What one failed lookup looked like, for the log: plain values only
 -- (a userdata or table is described, never kept).
 local function failShape(bOk, nID, nType, bRow)
-	local sId = nil
+	local sId
 	if bOk then
 		local bS, s = pcall(tostring, nID)
 		sId = bS and string.sub(tostring(s), 1, 40) or "?"
@@ -641,7 +669,7 @@ local function rowKey(k, tRow)
 	return nil
 end
 
-local tRowFields = { "auctionTimerSeconds", "isMoving", "isPregnant", "maturity", "name", "species", "gender", "selected" }
+local tRowFields = { "auctionTimerSeconds", "isMoving", "isPregnant", "isShoal", "maturity", "name", "species", "gender", "selected" }
 
 -- One row's fields: from the list table if there is one, else from the
 -- row's own context (cheap; used while confirming).
@@ -674,6 +702,25 @@ end
 local function isListed(tRow)
 	local n = tRow and toNumber(tRow.auctionTimerSeconds)
 	return n ~= nil and n > 0
+end
+
+-- The storage list on screen: its listed rows are noted, and a noted row
+-- shown unlisted again (expired or withdrawn) is dropped.
+Lister._NoteListings = function(self, tList)
+	for k, tRow in pairs(tList) do
+		local sKey = type(tRow) == "table" and rowKey(k, tRow) or nil
+		if sKey ~= nil then
+			local sKnown = self.tListedKeys[sKey]
+			if isListed(tRow) then
+				if sKnown == nil then
+					noteListing(sKey, (guidOf(sKey)))
+				end
+			elseif sKnown ~= nil then
+				self.tListedGuids[sKnown] = nil
+				self.tListedKeys[sKey] = nil
+			end
+		end
+	end
 end
 
 local function onlySelected(tSel, sKey)
@@ -816,18 +863,16 @@ end
 -- Page-assisted reads: while the engine selects, the page (listerlua.js)
 -- reads the selection, tradeAllowed and the limits from its DataStore and
 -- reports them. The format is plain text (the mod's Lua has no JSON
--- decoder; listercore.js encodeSeen):
---   v1|<key>|<selected keys, comma-separated, or ?>|<allowed 1/0/->|
+-- decoder; listercore.js encodeSeen, docs/PLAN-desk-quick-release.md 3.3),
+-- every text field percent-encoded (encodeURIComponent), so no field holds
+-- a raw "|":
+--   v2|<key>|<selected keys, comma-separated, or ?>|<allowed 1/0/->|
 --   <priceMin,priceMax,priceDefault,hoursMin,hoursMax,hoursDefault, - for
---   none>|<reason, the rest of the text>
--- v2 (2026-10-18, docs/PLAN-desk-quick-release.md 3.3) percent-encodes
--- every text field (encodeURIComponent), so no field holds a raw "|":
---   v2|<key>|<sel>|<allowed>|<limits>|<reason%>|<quickTrade 1/0/->|
---   <its reason%>|<its value text%>|<quickRelease 1/0/->|<its reason%>|
---   <its value text%>|<rehome 1/0/->|<quickTradePrice,quickReleasePrice>|
---   <connectingAction,loadingItems 1/0/->|<filters.isReleaseable 1/0/->|
---   <the row's source text%>
--- Both versions are read.
+--   none>|<reason%>|<quickTrade 1/0/->|<its reason%>|<its value text%>|
+--   <quickRelease 1/0/->|<its reason%>|<its value text%>|<rehome 1/0/->|
+--   <quickTradePrice,quickReleasePrice>|<connectingAction,loadingItems 1/0/->|
+--   <filters.isReleaseable 1/0/->|<the row's source text%>|<the page's id>
+-- The page id (listerlua.js PAGE) may be empty.
 -----------------------------------------------------------------------
 local function flagOf(s)
 	if s == "1" then
@@ -872,38 +917,30 @@ local function limitsOf(sLimits)
 end
 
 local function parseSeen(s)
-	if type(s) ~= "string" then
+	if type(s) ~= "string" or string.sub(s, 1, 3) ~= "v2|" then
 		return nil
 	end
-	if string.sub(s, 1, 3) == "v2|" then
-		local t = {}
-		for x in string.gmatch(string.sub(s, 4) .. "|", "([^|]*)|") do
-			t[#t + 1] = x
-		end
-		if #t < 16 or t[1] == "" then
-			return nil
-		end
-		local tP, tNet = numbersOf(t[13]), {}
-		for x in string.gmatch(t[14] .. ",", "([^,]*),") do
-			tNet[#tNet + 1] = flagOf(x)
-		end
-		return {
-			nV = 2, sKey = t[1], tSel = selOf(t[2]), bAllowed = flagOf(t[3]), sReason = unpct(t[5]), tLimits = limitsOf(t[4]),
-			tQuick = {
-				bTrade = flagOf(t[6]), sTradeReason = unpct(t[7]), sTradeValue = unpct(t[8]),
-				bRelease = flagOf(t[9]), sReleaseReason = unpct(t[10]), sReleaseValue = unpct(t[11]),
-				bRehome = flagOf(t[12]), nTradePrice = tP[1], nReleasePrice = tP[2],
-			},
-			tNet = { bConn = tNet[1], bLoading = tNet[2] }, bReleaseable = flagOf(t[15]), sSource = unpct(t[16]),
-			-- the reporting page's id (listerlua.js PAGE), when it sends one
-			sPage = (t[17] ~= nil and t[17] ~= "") and t[17] or nil,
-		}
+	local t = {}
+	for x in string.gmatch(string.sub(s, 4) .. "|", "([^|]*)|") do
+		t[#t + 1] = x
 	end
-	local sKey, sSel, sAllowed, sLimits, sReason = string.match(s, "^v1|([^|]*)|([^|]*)|([^|]*)|([^|]*)|(.*)$")
-	if sKey == nil or sKey == "" then
+	if #t < 16 or t[1] == "" then
 		return nil
 	end
-	return { nV = 1, sKey = sKey, tSel = selOf(sSel), bAllowed = flagOf(sAllowed), sReason = sReason, tLimits = limitsOf(sLimits) }
+	local tP, tNet = numbersOf(t[13]), {}
+	for x in string.gmatch(t[14] .. ",", "([^,]*),") do
+		tNet[#tNet + 1] = flagOf(x)
+	end
+	return {
+		nV = 2, sKey = t[1], tSel = selOf(t[2]), bAllowed = flagOf(t[3]), sReason = unpct(t[5]), tLimits = limitsOf(t[4]),
+		tQuick = {
+			bTrade = flagOf(t[6]), sTradeReason = unpct(t[7]), sTradeValue = unpct(t[8]),
+			bRelease = flagOf(t[9]), sReleaseReason = unpct(t[10]), sReleaseValue = unpct(t[11]),
+			bRehome = flagOf(t[12]), nTradePrice = tP[1], nReleasePrice = tP[2],
+		},
+		tNet = { bConn = tNet[1], bLoading = tNet[2] }, bReleaseable = flagOf(t[15]), sSource = unpct(t[16]),
+		sPage = (t[17] ~= nil and t[17] ~= "") and t[17] or nil,
+	}
 end
 Lister.ParseSeen = parseSeen
 
@@ -1083,10 +1120,9 @@ Lister._Busy = function(self)
 			return true, "loading"
 		end
 	end
-	-- the mod's own market check
+	-- the mod's own market check, until it puts the market back (its page reads ask for more pages)
 	local MarketPeek = global.package.loaded["pz2qol.marketpeek"]
-	local tPeek = type(MarketPeek) == "table" and MarketPeek.tPeek or nil
-	if type(tPeek) == "table" and tPeek.sState == "requested" then
+	if type(MarketPeek) == "table" and MarketPeek.tPeek ~= nil then
 		return true, "peek"
 	end
 	return false
@@ -1170,14 +1206,17 @@ local function parseJob(sJob)
 				if sPace == nil then
 					return nil, "Unknown job format (expected v1)."
 				end
-				-- options after the mode: onrefused=quicktrade|release and
-				-- refusedmax=<n> (a listing run only; see Lister._Refused)
+				-- options after the mode: onrefused=quicktrade|release,
+				-- refusedmax=<n> (a listing run only; see Lister._Refused) and
+				-- offset=<percent> (the player's price offset, priceFor)
 				for sOpt in string.gmatch(sOpts or "", "%S+") do
-					local sK, sV = string.match(sOpt, "^(%a+)=(%w+)$")
+					local sK, sV = string.match(sOpt, "^(%a+)=(%-?%w+)$")
 					if sK == "onrefused" and (sV == "quicktrade" or sV == "release") and (sWord == "" or sWord == "list") then
 						tOpts.sOnRefused = sV
 					elseif sK == "refusedmax" and tonumber(sV) ~= nil and (sWord == "" or sWord == "list") then
 						tOpts.nRefusedMax = math.max(0, math.floor(tonumber(sV)))
+					elseif sK == "offset" and tonumber(sV) ~= nil then
+						tOpts.nOffset = math.max(-Lister.nOffsetLimit, math.min(Lister.nOffsetLimit, tonumber(sV) / 100))
 					else
 						return nil, "Unknown job option (" .. sOpt .. ")."
 					end
@@ -1214,9 +1253,20 @@ local function parseJob(sJob)
 end
 Lister.ParseJob = parseJob
 
+-- The page's nicePrice (pricing.js): steps of 5 under 500, 10 under 5000, 50 above.
+local function nicePrice(nPrice)
+	local nStep = nPrice < 500 and 5 or (nPrice < 5000 and 10 or 50)
+	return math.max(nStep, math.floor(nPrice / nStep + 0.5) * nStep)
+end
+
 -- nPrice (integer, inside the game's limits), sCapped, bUsedDefault; nPrice
--- nil when there is no usable price.
-local function priceFor(nJob, tLimits)
+-- nil when there is no usable price. nJob is the page's recommendation
+-- before the player's offset (nil: the game's default price, rounded by
+-- nicePrice); it is capped to the game's limits first, then nOffset (none
+-- too) applies, rounded and capped again, as the storage panel prices a
+-- single animal (pricing.js recommendPrice; tests/price_table.txt holds
+-- both to it).
+local function priceFor(nJob, tLimits, nOffset)
 	local nPrice, bDefault = nJob, false
 	if nPrice == nil then
 		nPrice, bDefault = tLimits.nPriceDefault, true
@@ -1224,19 +1274,33 @@ local function priceFor(nJob, tLimits)
 	if nPrice == nil or not (nPrice > 0) then
 		return nil, nil, bDefault
 	end
-	nPrice = math.floor(nPrice + 0.5)
+	local nMin = tLimits.nPriceMin ~= nil and math.ceil(tLimits.nPriceMin) or nil
+	local nMax = tLimits.nPriceMax ~= nil and math.floor(tLimits.nPriceMax) or nil
 	local sCapped = nil
-	if tLimits.nPriceMin ~= nil and nPrice < math.ceil(tLimits.nPriceMin) then
-		nPrice, sCapped = math.ceil(tLimits.nPriceMin), "min"
+	local function cap(nWanted)
+		if nMin ~= nil and nWanted < nMin then
+			nWanted, sCapped = nMin, "min"
+		end
+		if nMax ~= nil and nWanted > nMax then
+			nWanted, sCapped = nMax, "max"
+		end
+		return nWanted
 	end
-	if tLimits.nPriceMax ~= nil and nPrice > math.floor(tLimits.nPriceMax) then
-		nPrice, sCapped = math.floor(tLimits.nPriceMax), "max"
+	-- the page's price is already its base (rounded, then capped): rounding it again could move a capped one
+	nPrice = cap(bDefault and nicePrice(nPrice) or nPrice)
+	local sBaseCapped = sCapped
+	sCapped = nil
+	nPrice = cap(nicePrice(nPrice * (1 + (nOffset or 0))))
+	-- a capped price the offset leaves at the limit still counts as capped
+	if sCapped == nil and (nPrice == nMin or nPrice == nMax) then
+		sCapped = sBaseCapped
 	end
 	if nPrice < 1 then
 		return nil, nil, bDefault
 	end
 	return toInteger(nPrice), sCapped, bDefault
 end
+Lister.PriceFor = priceFor
 
 -- Whole hours inside the game's limits: "max" -> the longest, "default" ->
 -- the game's default, a number -> clamped.
@@ -1286,9 +1350,10 @@ Lister._Send = function(self, oUI, sEvent, ...)
 		local Hub = global.package.loaded["pz2qol.hub"]
 		oUI = Hub and Hub.bFrontEndIsModded and Hub.oFrontEndUI or nil
 	end
-	if oUI ~= nil then
-		pcall(oUI.TriggerEventAtNextAdvance, oUI, sEvent, ...)
+	if oUI == nil then
+		return false
 	end
+	return (pcall(oUI.TriggerEventAtNextAdvance, oUI, sEvent, ...))
 end
 
 Lister._State = function(self, tRun, sMessage)
@@ -1302,12 +1367,16 @@ Lister._State = function(self, tRun, sMessage)
 	end
 	local tResults = array()
 	for i, r in ipairs(tRun.tResults) do
+		-- the game's verdict once it was selected: sent once and kept by the page (a state goes every second)
+		local vVerdict = NULL
+		if r.verdict ~= nil and not r.bVerdictSent then
+			vVerdict = r.verdict
+		end
 		tResults[i] = {
 			guid = r.guid, status = r.status, kind = r.kind or NULL, price = r.price or NULL,
 			hours = r.hours or NULL, capped = r.capped or NULL, usedDefault = r.usedDefault == true,
 			detail = r.detail or "",
-			-- what the game allows for it, once it was selected (listing and check runs)
-			verdict = r.verdict or NULL,
+			verdict = vVerdict,
 			-- quick-traded / released after the server refused its listing
 			afterRefused = r.listRefused ~= nil,
 		}
@@ -1320,10 +1389,23 @@ Lister._State = function(self, tRun, sMessage)
 	}
 end
 
+-- a page that (re)loads has none of the verdicts sent so far: the next state carries them all
+Lister._ResendVerdicts = function(self, tRun)
+	for _, r in ipairs(tRun.tResults) do
+		r.bVerdictSent = nil
+	end
+end
+
 Lister._Emit = function(self, tRun, sMessage, oUI)
 	tRun.bDirty = false
 	tRun.nLastEmit = now()
-	self:_Send(oUI or tRun.oUI, "PZ2QoL_ListerState", toJson(self:_State(tRun, sMessage)))
+	if self:_Send(oUI or tRun.oUI, "PZ2QoL_ListerState", toJson(self:_State(tRun, sMessage))) then
+		for _, r in ipairs(tRun.tResults) do
+			if r.verdict ~= nil then
+				r.bVerdictSent = true
+			end
+		end
+	end
 end
 
 -- A Start that does not start: its own state, run 0, refused.
@@ -1347,9 +1429,10 @@ local tSkipText = {
 	gone = "No longer in storage (sold, moved or filtered out).",
 	listed = "Already on the market.",
 	moving = "Being moved.",
-	elderly = "Elderly and no longer fertile: the market won't take it.",
+	elderly = "Elderly: the market won't take it.",
 	pregnant = "Pregnant: the market won't take it until she gives birth.",
 	juvenile = "A juvenile: the market won't take it.",
+	shoal = "Shoals are traded as a group in the game's own Market; the mod lists single animals.",
 	unselectable = "The game did not select it in time.",
 	changed = "The storage list changed just before listing; not listed.",
 	busy = "The game was still busy with another server request; not listed.",
@@ -1447,12 +1530,18 @@ Lister._Result = function(self, tRun, sStatus, sKind, sDetail)
 	tRun.nIndex = tRun.nIndex + 1
 	tRun.bDirty = true
 	mark(tResultMarks[sStatus] or "lister_skip")
+	if sStatus == "listed" and tCur ~= nil then
+		noteListing(tCur.sKey, tCur.sGuid)
+	end
 	-- a listing that timed out may still be answered (late errors): the
 	-- next one waits for a quiet server first
 	if tCur ~= nil and tCur.bSent and sStatus == "timeout" then
 		tRun.bNeedQuiet = true
 	end
-	-- a quick run: no fresh page report for two animals in a row stops it
+	-- two animals in a row without a fresh page report stop the run; one with its report ends the streak
+	if tCur ~= nil and not tCur.bMissed then
+		tRun.nMiss = nil
+	end
 	if tRun.nMiss ~= nil and tRun.nMiss >= self.nQuickMissStop then
 		mark("lister_quick_stop_nopage")
 		return self:_End(tRun, "stopped", "Stopped: no fresh report from the page for " .. tRun.nMiss .. " animals in a row; nothing more was sent.")
@@ -1485,12 +1574,14 @@ local tQuickSkips = { notallowed = true, rehome = true, nopage = true }
 Lister._Skip = function(self, tRun, sKind, sDetail)
 	-- why, in the trace (lister_skip alone said nothing)
 	mark(tSkipText[sKind] ~= nil and ("lister_skip_" .. tostring(sKind)) or "lister_skip_other")
+	local tCur = tRun.tCur
 	if self:_Q(tRun) ~= nil and not tQuickSkips[sKind] then
 		local sWhy = sDetail or tSkipText[sKind] or tostring(sKind)
 		mark("lister_quick_stop_unexpected")
-		return self:_StopRun(tRun, "skipped", sKind, sWhy, "Stopped: " .. sWhy .. " Nothing more was sent.")
+		-- after a refusal the result reads as the refusal, so it carries the why
+		local bAfterRefusal = tCur ~= nil and tCur.bAfterRefusal
+		return self:_StopRun(tRun, "skipped", sKind, bAfterRefusal and sWhy or sDetail, "Stopped: " .. sWhy .. " Nothing more was sent.")
 	end
-	local tCur = tRun.tCur
 	if tCur ~= nil and tCur.bAfterRefusal then
 		-- a listing the server refused that the game won't quick-trade now:
 		-- it stays refused, and the run goes on
@@ -1498,7 +1589,8 @@ Lister._Skip = function(self, tRun, sKind, sDetail)
 		return self:_Result(tRun, "refused", "refused", tostring(tRes.listRefused or "Refused by the server.")
 			.. " Not " .. (tCur.sQuick == "release" and "released" or "quick-traded") .. ": " .. tostring(sDetail or tSkipText[sKind] or sKind))
 	end
-	return self:_Result(tRun, "skipped", sKind, sDetail or tSkipText[sKind])
+	-- the page words each kind itself (RESULT_WORDS): only the game's reason or a custom text adds to it
+	return self:_Result(tRun, "skipped", sKind, sDetail)
 end
 
 -- A listing the server refused (developer, 2026-10-18: the same tigers fail
@@ -1559,15 +1651,18 @@ Lister._PageReloaded = function(self, tRun, sHow)
 	return self:_End(tRun, "stopped", "Stopped: page reloaded.")
 end
 
+-- the cheap flag, asked before the list is read: reading it while the game rebuilds it crashed the game (nQuickFirstLook)
+Lister._Loading = function(self)
+	return element(context("hubAnimalsData", "network"), "loadingItems") == true
+end
+
 -- Where a sent quick animal is now: "gone" (its GUID absent and exactly one
 -- row fewer), "there", or a state to wait out (the list is being rebuilt):
 -- "leaving" (the id is gone, its row still shown), "ambiguous" (more rows
 -- with its look than at the send), "unreadable" (loading, or another count).
 -- _QuickGone waits until gone reads twice in a row, or stops at the deadline.
 Lister._QuickState = function(self, tCur)
-	-- the cheap flag first: the list itself is not read while it loads
-	local ctx = context("hubAnimalsData", "network")
-	if ctx ~= nil and element(ctx, "loadingItems") == true then
+	if self:_Loading() then
 		return "unreadable"
 	end
 	local tList = self:_List()
@@ -1630,7 +1725,8 @@ Lister._End = function(self, tRun, sPhase, sMessage)
 		if now() - (tCur.nSentAt or 0) >= self.nQuickFirstLook then
 			bOk, sState = pcall(self._QuickState, self, tCur)
 		end
-		if bOk and sState == "gone" then
+		-- gone counts read twice in a row, as in _QuickGone: this look and the one before
+		if bOk and sState == "gone" and (tCur.nGoneSeen or 0) >= 1 then
 			tRes.status, tRes.kind, tRes.detail = tQ.sDone, nil, ""
 			mark(tResultMarks[tQ.sDone])
 		else
@@ -1665,10 +1761,14 @@ Lister._End = function(self, tRun, sPhase, sMessage)
 		local tRes = tRun.tResults[tRun.nIndex]
 		if tCur.bSent then
 			-- it reached the server: one last look, else it may still appear
-			local bOk, bListed = pcall(self._IsListed, self, tCur)
+			local bOk, bListed = false, false
+			if not self:_Loading() then
+				bOk, bListed = pcall(self._IsListed, self, tCur)
+			end
 			if bOk and bListed then
 				tRes.status, tRes.kind, tRes.detail = "listed", nil, ""
 				mark("lister_listed")
+				noteListing(tCur.sKey, tCur.sGuid)
 			else
 				tRes.status, tRes.kind = "stopped", "stopped"
 				tRes.detail = (sPhase == "closed" and "Animal Storage was closed" or "Stopped")
@@ -1727,6 +1827,30 @@ Lister._MarkBusy = function(self, tRun, sWhy)
 		mark("lister_busy_" .. tostring(sWhy))
 		log("busy", runFields(tRun, { step = tRun.sStep, why = sWhy, quiet = tRun.bNeedQuiet == true }))
 	end
+end
+
+-- RequestsInProgress alone may stay on for background polls (the old page lister only asked IsDatabaseOperationInProgress)
+Lister._BusyNow = function(self, tRun, t, sTimeoutDetail)
+	local bBusy, sWhy = self:_Busy()
+	if bBusy and sWhy == "requests" and (tRun.bRequestsIgnored or t - tRun.nStepStart > self.nRequestsGrace) then
+		if not tRun.bRequestsIgnored then
+			tRun.bRequestsIgnored = true
+			mark("lister_busy_requests_ignored")
+			log("busy_requests_ignored", runFields(tRun, { step = tRun.sStep }))
+		end
+		bBusy = false
+	end
+	if not bBusy then
+		return false
+	end
+	tRun.nIdleSince = nil
+	self:_MarkBusy(tRun, sWhy)
+	if t - tRun.nStepStart > self.nServerTimeout then
+		self:_Skip(tRun, "busy", sTimeoutDetail)
+		return true
+	end
+	tRun.sMessage = "Waiting for the game's other server requests."
+	return true
 end
 
 -- Whether row sKey holds the animal behind sToken right now: true, or
@@ -2065,6 +2189,7 @@ end
 
 Lister._QuickNoPage = function(self, tRun)
 	tRun.nMiss = (tRun.nMiss or 0) + 1
+	tRun.tCur.bMissed = true
 	mark("lister_quick_nopage")
 	log("quick_nopage", runFields(tRun, { n = tRun.nMiss, step = tRun.sStep }))
 	return self:_Skip(tRun, "nopage")
@@ -2117,24 +2242,7 @@ Lister._Step = function(self, tRun, t)
 		return
 	end
 	if tRun.sStep == "server" then
-		local bBusy, sWhy = self:_Busy()
-		-- RequestsInProgress alone may stay on for background polls (the old
-		-- page lister only ever asked IsDatabaseOperationInProgress): short wait
-		if bBusy and sWhy == "requests" and (tRun.bRequestsIgnored or t - tRun.nStepStart > self.nRequestsGrace) then
-			if not tRun.bRequestsIgnored then
-				tRun.bRequestsIgnored = true
-				mark("lister_busy_requests_ignored")
-				log("busy_requests_ignored", runFields(tRun, { step = tRun.sStep }))
-			end
-			bBusy = false
-		end
-		if bBusy then
-			tRun.nIdleSince = nil
-			self:_MarkBusy(tRun, sWhy)
-			if t - tRun.nStepStart > self.nServerTimeout then
-				return self:_Skip(tRun, "busy")
-			end
-			tRun.sMessage = "Waiting for the game's other server requests."
+		if self:_BusyNow(tRun, t) then
 			return
 		end
 		if tRun.bNeedQuiet then
@@ -2191,18 +2299,23 @@ Lister._Step = function(self, tRun, t)
 				return self:_Skip(tRun, "moving")
 			end
 		end
-		-- the market's own rules (pregnant, elderly, juvenile) are for listing;
-		-- a quick action goes by the game's own flag for it
+		-- the market's own rules (shoal, pregnant, elderly, juvenile) are for
+		-- listing; a quick action goes by the game's own flag for it
 		if tRow ~= nil and self:_Q(tRun) == nil and tRun.sMode ~= "unlist" then
+			if tRow.isShoal == true then
+				return self:_Skip(tRun, "shoal")
+			end
 			-- never listed: the game's own sell flow blocks pregnant animals
 			-- (RelocateAnimalsPopup g_tSellPreventers bPregnant); storage rows
 			-- carry isPregnant (AnimalMarketAndStorageSchema.js)
 			if tRow.isPregnant == true then
 				return self:_Skip(tRun, "pregnant")
 			end
-			-- EAnimalMaturity: 0 infant, 6 elderly and infertile
+			-- EAnimalMaturity: 0 infant, 3 elderly, 6 elderly and infertile; the
+			-- market refuses every elderly animal, and the refusal can take the
+			-- game down (pz2-modding animals-and-breeding.md, Trading near elderly)
 			local nMaturity = toNumber(tRow.maturity)
-			if nMaturity == 6 then
+			if nMaturity == 3 or nMaturity == 6 then
 				return self:_Skip(tRun, "elderly")
 			end
 			if nMaturity == 0 then
@@ -2348,7 +2461,8 @@ Lister._Step = function(self, tRun, t)
 		end
 		-- what the game allows for it (market, quick trade, quick release,
 		-- rehome), for the desk's categories; logged for Phase 0a
-		tRun.tResults[tRun.nIndex].verdict = verdictOf(tData)
+		local tResult = tRun.tResults[tRun.nIndex]
+		tResult.verdict, tResult.bVerdictSent = verdictOf(tData), nil
 		tRun.sLastSelGuid = tCur.sGuid
 		self.tLastSel = { sGuid = tCur.sGuid, nAt = t }
 		pcall(self._LogQuick, self, tRun, tData)
@@ -2359,26 +2473,28 @@ Lister._Step = function(self, tRun, t)
 		if tQ ~= nil then
 			-- 4.3 steps 4-5: a fresh page report (only those reach here) and
 			-- the action's own flag allowed now, else skip with the reason
-			tRun.nMiss = 0
 			local q = tData.tQuick
-			local _, sQm0 = self:_Q(tRun)
+			local _, sQm = self:_Q(tRun)
 			if q.bRehome == true then
 				mark("lister_quick_notallowed")
 				return self:_Skip(tRun, "rehome")
 			end
 			-- a release never takes an animal bought for cash (the game's own rule)
-			if sQm0 == "release" and type(q.sReleaseReason) == "string" and string.find(q.sReleaseReason, "CashSeeded", 1, true) then
+			if sQm == "release" and type(q.sReleaseReason) == "string" and string.find(q.sReleaseReason, "CashSeeded", 1, true) then
 				mark("lister_quick_notallowed")
 				return self:_Skip(tRun, "notallowed", "[AnimalList_Problem_CashSeeded]")
 			end
 			if q[tQ.sFlag] ~= true then
 				mark("lister_quick_notallowed")
-				local sWhy = q[tQ.sWhy]
-				return self:_Skip(tRun, "notallowed", (type(sWhy) == "string" and sWhy ~= "") and compactReason(sWhy) or nil)
+				local sGameWhy = q[tQ.sWhy]
+				return self:_Skip(tRun, "notallowed", (type(sGameWhy) == "string" and sGameWhy ~= "") and compactReason(sGameWhy) or nil)
 			end
 			local tRes = tRun.tResults[tRun.nIndex]
-			local _, sQm = self:_Q(tRun)
-			tRes.price = (sQm == "quicktrade" and q.nTradePrice or q.nReleasePrice) or nil
+			if sQm == "quicktrade" then
+				tRes.price = q.nTradePrice
+			else
+				tRes.price = q.nReleasePrice
+			end
 			tCur.sDataPrint = dataPrint(tData, true)
 			tCur.sDataSrc = "page"
 			return self:_SetStep(tRun, "send", tQ.sSending)
@@ -2394,19 +2510,17 @@ Lister._Step = function(self, tRun, t)
 				end
 			end
 			log("untradeable", runFields(tRun, { src = tData.sSrc, problems = table.concat(tKeys, ","), reason = sReason }))
-			-- the game won't list it (e.g. NoBirthZoo) but allows the run's
-			-- "If refused" quick action now: the same fallback as a server
-			-- refusal (developer, 2026-10-19; nothing was sent for it)
+			-- the "If refused" quick action only for a reason that never
+			-- passes; any other may (an infection, a transport), and a quick
+			-- action is permanent
 			local tFb = tRun.sOnRefused ~= nil and self.tQuickModes[tRun.sOnRefused] or nil
-			if tFb ~= nil and type(tData.tQuick) == "table" and tData.tQuick[tFb.sFlag] == true
-				and (tRun.nRefusedMax == nil or (tRun.nRefusedTried or 0) < tRun.nRefusedMax) then
-				local sWhy = (type(sReason) == "string" and sReason ~= "") and compactReason(sReason) or "The game does not allow listing it."
-				return self:_Refused(tRun, "Not listed: " .. sWhy)
+			if tFb ~= nil and self:_LastingProblem(tKeys) and type(tData.tQuick) == "table" and tData.tQuick[tFb.sFlag] == true then
+				return self:_Refused(tRun, "Not listed: " .. compactReason(sReason))
 			end
 			return self:_Skip(tRun, "untradeable", (type(sReason) == "string" and sReason ~= "") and sReason or nil)
 		end
 		local tRes = tRun.tResults[tRun.nIndex]
-		local nPrice, sCapped, bDefault = priceFor(tCur.nPrice, tData.tLimits)
+		local nPrice, sCapped, bDefault = priceFor(tCur.nPrice, tData.tLimits, tRun.nOffset)
 		local tL = tData.tLimits
 		log("price", runFields(tRun, { src = tData.sSrc, jobPrice = tCur.nPrice or "-", price = nPrice or "none", capped = sCapped,
 			usedDefault = bDefault, pmin = tL.nPriceMin, pmax = tL.nPriceMax, pdef = tL.nPriceDefault, hmin = tL.nHoursMin,
@@ -2435,23 +2549,7 @@ Lister._Step = function(self, tRun, t)
 			mark("lister_check_send_blocked")
 			return self:_Result(tRun, "skipped", "error", "Mod error: a check run reached the send step; nothing was sent.")
 		end
-		local bBusy, sWhy = self:_Busy()
-		-- RequestsInProgress alone may stay on for background polls (the old
-		-- page lister only ever asked IsDatabaseOperationInProgress): short wait
-		if bBusy and sWhy == "requests" and (tRun.bRequestsIgnored or t - tRun.nStepStart > self.nRequestsGrace) then
-			if not tRun.bRequestsIgnored then
-				tRun.bRequestsIgnored = true
-				mark("lister_busy_requests_ignored")
-				log("busy_requests_ignored", runFields(tRun, { step = tRun.sStep }))
-			end
-			bBusy = false
-		end
-		if bBusy then
-			self:_MarkBusy(tRun, sWhy)
-			if t - tRun.nStepStart > self.nServerTimeout then
-				return self:_Skip(tRun, "busy")
-			end
-			tRun.sMessage = "Waiting for the game's other server requests."
+		if self:_BusyNow(tRun, t) then
 			return
 		end
 		-- in the same tick as the call: the key must still be this animal,
@@ -2503,7 +2601,7 @@ Lister._Step = function(self, tRun, t)
 			return
 		end
 		tCur.nLastPoll = t
-		if self:_IsListed(tCur) then
+		if not self:_Loading() and self:_IsListed(tCur) then
 			return self:_Result(tRun, "listed", nil, "")
 		end
 		local tErr = tCur.tError
@@ -2533,20 +2631,7 @@ end
 -- unchanged; then exactly what the game's handler passes on: { [1] = key }.
 Lister._QuickSend = function(self, tRun, tCur, t)
 	local tQ = self:_Q(tRun)
-	local bBusy, sWhy = self:_Busy()
-	if bBusy and sWhy == "requests" and (tRun.bRequestsIgnored or t - tRun.nStepStart > self.nRequestsGrace) then
-		if not tRun.bRequestsIgnored then
-			tRun.bRequestsIgnored = true
-			mark("lister_busy_requests_ignored")
-		end
-		bBusy = false
-	end
-	if bBusy then
-		self:_MarkBusy(tRun, sWhy)
-		if t - tRun.nStepStart > self.nServerTimeout then
-			return self:_Skip(tRun, "busy", "The game stayed busy with another server request; not sent.")
-		end
-		tRun.sMessage = "Waiting for the game's other server requests."
+	if self:_BusyNow(tRun, t, "The game stayed busy with another server request; not sent.") then
 		return
 	end
 	-- a report that arrived after this step began: after a reload or a
@@ -2813,8 +2898,6 @@ end
 Lister.OnServerError = function(self, nError, sName, nRequestType)
 	local tRun = self.tRun
 	local tCur = tRun and tRun.tCur
-	-- Phase 0a/0b: every request type that fails during a run or within
-	-- 10 s of a vanilla quick trade / release (log only)
 	-- a quick animal waiting to leave storage: an error only shortens the wait
 	-- (the storage list still decides; Phase 0b saw no request type to match)
 	if tRun ~= nil and tCur ~= nil and tCur.bSent and tRun.sStep == "unconfirm" then
@@ -2831,16 +2914,10 @@ Lister.OnServerError = function(self, nError, sName, nRequestType)
 		mark("lister_quick_server_error")
 		log("quick_server_error", runFields(tRun, { code = nError, name = sName or "?", req = nRequestType, afterSend = secs(now() - tCur.nSentAt) }))
 	end
-	local tProbe = self.tProbe or self.tProbeLast
-	local bProbe = tProbe ~= nil and now() - tProbe.nAt <= self.nProbeErrWindow
-	if tRun ~= nil or bProbe then
+	-- every request type that fails during a run (log only)
+	if tRun ~= nil then
 		local n = toNumber(nRequestType)
 		mark((n ~= nil and n == math.floor(n) and n >= 0 and n <= 63) and ("lister_server_error_type_" .. string.format("%d", toInteger(n))) or "lister_server_error_type_other")
-	end
-	if bProbe then
-		mark("lister_probe_server_error")
-		log("probe_server_error", { probe = tProbe.nId, kind = tProbe.sKind, code = nError, name = sName or "?", req = nRequestType,
-			ms = toInteger((now() - tProbe.nAt) * 1000) })
 	end
 	-- why an error does not count for the animal being confirmed (logged)
 	local sIgnored = nil
@@ -2895,6 +2972,7 @@ Lister.Hello = function(self, oUI, sReq)
 					nRows = nRows + 1
 				end
 			end
+			self:_NoteListings(tList)
 		end
 	end
 	local bOnline = self:_Online()
@@ -2908,6 +2986,17 @@ Lister.Hello = function(self, oUI, sReq)
 		-- taking listings off the market (the desk's My listings)
 		unlist = hubFn(self.sCancelNative) ~= nil,
 	}))
+	-- a page that asks for the first time (a load or a reload) gets every verdict again; hellos without a page id count as one page
+	local sHelloPage = pageOf(sReq) or ""
+	if sHelloPage ~= self.sHelloPage then
+		self.sHelloPage = sHelloPage
+		if self.tRun ~= nil then
+			self:_ResendVerdicts(self.tRun)
+		end
+		if self.tLast ~= nil then
+			self:_ResendVerdicts(self.tLast)
+		end
+	end
 	-- a page that (re)loads during a quick run stops it; it never restarts
 	local tRun = self.tRun
 	if tRun ~= nil and tRun.sPage ~= nil and pageOf(sReq) ~= nil and pageOf(sReq) ~= tRun.sPage then
@@ -3000,7 +3089,6 @@ Lister.Resolve = function(self, oUI, sReq, sKeys)
 				s.n = s.n + 1
 			end
 		end
-		nID = nil
 	end
 	for sVia in pairs(tWays) do
 		if sVia ~= "id" and not (self.tWayMarked or {})[sVia] then
@@ -3107,6 +3195,7 @@ Lister.Start = function(self, oUI, sReq, sJob)
 		tRun.sPage = pageOf(sReq)
 		mark("lister_quick_start")
 	end
+	tRun.nOffset = tOpts and tOpts.nOffset or nil
 	if sMode == "unlist" then
 		tRun.sPage = pageOf(sReq)
 		mark("lister_unlist_start")
@@ -3124,7 +3213,7 @@ Lister.Start = function(self, oUI, sReq, sJob)
 	self.bFlagMarked = nil
 	trace("run " .. tRun.nId .. ": " .. #tAnimals .. " animals")
 	local t = now()
-	if self.nLastServer ~= nil and t - self.nLastServer < self.nPaceMs / 1000 then
+	if self.nLastServer ~= nil and t - self.nLastServer < (tRun.nPaceMs or self.nPaceMs) / 1000 then
 		-- the last run's listing was moments ago: its pause first
 		tRun.nPauseStart = self.nLastServer
 		self:_SetStep(tRun, "pause", "Pausing between listings.")
@@ -3156,9 +3245,17 @@ Lister.Stop = function(self)
 	self:_End(tRun, "stopped", "Stopped by you.")
 end
 
+-- the desk's slider sets a running quick run's own pace (it started at the slider's), else the listing pace
 Lister.SetPace = function(self, nMs)
-	self.nPaceMs = self:_ClampPace(nMs)
-	log("pace", { asked = nMs, ms = self.nPaceMs, run = self.tRun and self.tRun.nId or nil })
+	local tRun = self.tRun
+	local nPace = self:_ClampPace(nMs)
+	local bQuick = tRun ~= nil and self.tQuickModes[tRun.sMode] ~= nil
+	if bQuick then
+		tRun.nPaceMs = nPace
+	else
+		self.nPaceMs = nPace
+	end
+	log("pace", { asked = nMs, ms = nPace, run = tRun and tRun.nId or nil, quick = bQuick or nil })
 	if self.tRun ~= nil then
 		self:_Emit(self.tRun)
 	end
@@ -3304,213 +3401,7 @@ Lister.Attach = function(self, oUI)
 	end
 end
 
------------------------------------------------------------------------
--- Phase 0b (docs/PLAN-desk-quick-release.md 2): the vanilla Quick trade
--- and Quick release, logged. The storage screen's Confirm sends
--- AnimalStorage_QuickTrade_Cash / _Credits(selectedAnimalIDs) and the hub
--- mode passes the array straight to StorageUIQuickTradeAnimals /
--- StorageUIReleaseAnimalsToWild (animalstoragehubmode.lua 1.0.5). The
--- wrappers only log (the _tIDs shape, the network and request type, server
--- errors in the next 10 s, when the rows leave the storage list), then call
--- the game's own handler unchanged with exactly the arguments it got.
--- Nothing is sent or changed by the mod; every log step is pcall'd.
------------------------------------------------------------------------
--- a value's type and text, for the log
-local function valueText(v)
-	local sType = type(v)
-	if sType == "number" then
-		return sType, math.type(v) == "integer" and string.format("%d", v) or string.format("%.17g", v)
-	elseif sType == "string" then
-		return sType, string.sub(v, 1, 60)
-	elseif sType == "boolean" then
-		return sType, tostring(v)
-	end
-	return sType, sType
-end
-
--- the list row a value of _tIDs names: by row key, else by the row's own id
-local function rowFor(tList, s)
-	if tList == nil or s == nil then
-		return nil
-	end
-	local tRow = tList[s]
-	if type(tRow) == "table" then
-		return s, tRow, "key"
-	end
-	for k, t in pairs(tList) do
-		if type(t) == "table" and (t.id == s or (t.id ~= nil and idString(t.id) == s)) then
-			return rowKey(k, t), t, "id"
-		end
-	end
-	return nil
-end
-
-local function fpCount(tList, sFp)
-	local n = 0
-	for _, t in pairs(tList) do
-		if type(t) == "table" and fpOf(t) == sFp then
-			n = n + 1
-		end
-	end
-	return n
-end
-
--- Before the game's handler: what it is given and what that stands for.
-Lister._ProbeQuick = function(self, sKind, tArgs)
-	local tIDs = tArgs[2]
-	self.nProbes = self.nProbes + 1
-	local tProbe = { nId = self.nProbes, sKind = sKind, nAt = now(), tRows = {} }
-	mark("lister_probe_" .. sKind)
-	local tShape = { probe = tProbe.nId, kind = sKind, nargs = tArgs.n, type = type(tIDs), net = netText(self:_Net()), run = self.tRun and self.tRun.nId or nil }
-	if type(tIDs) == "table" then
-		local nCount, nMin, nMax, tKeyTypes = 0, nil, nil, {}
-		for k in pairs(tIDs) do
-			nCount = nCount + 1
-			tKeyTypes[type(k)] = (tKeyTypes[type(k)] or 0) + 1
-			if type(k) == "number" then
-				nMin = (nMin == nil or k < nMin) and k or nMin
-				nMax = (nMax == nil or k > nMax) and k or nMax
-			end
-		end
-		tShape.len, tShape.count, tShape.kmin, tShape.kmax, tShape.ktypes = #tIDs, nCount, nMin, nMax, tKeyTypes
-		tShape.meta = global.getmetatable(tIDs) ~= nil
-	elseif tIDs ~= nil then
-		tShape.vtype, tShape.v = valueText(tIDs)
-	end
-	log("probe_call", tShape)
-	-- the storage list is not read as a table while the game may still be
-	-- applying the last quick trade / release (a native crash, debugging.md)
-	local tLast = self.tProbeLast
-	local bRecent = tLast ~= nil and tProbe.nAt - tLast.nAt < self.nQuickFirstLook
-	local tList = nil
-	if not bRecent and self:_Net().loading ~= true then
-		tList = self:_List()
-	end
-	local n = 0
-	if type(tIDs) == "table" then
-		for k, v in pairs(tIDs) do
-			n = n + 1
-			if n > 20 then
-				break
-			end
-			local sVType, sV = valueText(v)
-			local s = (type(v) == "string" or type(v) == "number") and idString(v) or nil
-			local sKey, tRow, sVia = rowFor(tList, s)
-			local sTok = sKey and guidOf(sKey) or nil
-			local sFp = tRow and fpOf(tRow) or nil
-			log("probe_id", { probe = tProbe.nId, k = tostring(k), ktype = type(k), vtype = sVType, v = sV, key = sKey, via = sVia,
-				guid = sTok or "none", species = tRow and tRow.species, timer = tRow and tRow.auctionTimerSeconds })
-			if sFp ~= nil then
-				tProbe.tRows[#tProbe.tRows + 1] = { sFp = sFp, nFp = fpCount(tList, sFp), sTok = sTok, sKey = sKey }
-			end
-		end
-	end
-	if #tProbe.tRows == 0 then
-		mark("lister_probe_row_none")
-	end
-	self.tProbe = tProbe
-	self.tProbeLast = tProbe
-end
-
--- Right after the game's handler: the request it started (type), if any.
-Lister._ProbeAfter = function(self)
-	local p = self.tProbe
-	if p == nil then
-		return
-	end
-	local tNet = self:_Net()
-	log("probe_after", { probe = p.nId, kind = p.sKind, net = netText(tNet), dbType = tNet.dbType })
-end
-
--- Every frame while one is watched (Advance): busy / idle, and each row's
--- leaving the storage list (its fingerprint seen fewer times than before).
-Lister._ProbeTick = function(self)
-	local p = self.tProbe
-	if p == nil then
-		return
-	end
-	if not tracing() then
-		-- no log to write: nothing to watch for
-		self.tProbe = nil
-		return
-	end
-	local t = now()
-	if t - (p.nLastPoll or 0) < self.nProbePoll then
-		return
-	end
-	p.nLastPoll = t
-	local nMs = toInteger((t - p.nAt) * 1000)
-	local tNet = self:_Net()
-	if netBusy(tNet) and p.nBusyMs == nil then
-		p.nBusyMs = nMs
-		log("probe_busy", { probe = p.nId, kind = p.sKind, ms = nMs, net = netText(tNet), dbType = tNet.dbType })
-	elseif p.nBusyMs ~= nil and p.nIdleMs == nil and not netBusy(tNet) then
-		p.nIdleMs = nMs
-		log("probe_idle", { probe = p.nId, kind = p.sKind, ms = nMs })
-	end
-	-- not in the first second after the game's handler, nor while the list
-	-- loads: the game rebuilds it then, and reading it as a table crashed
-	-- natively (3.2.0 player, 2026-10-20; the engine's nQuickFirstLook rule)
-	local tList = nil
-	if t - p.nAt >= self.nQuickFirstLook and tNet.loading ~= true then
-		tList = self:_List()
-	end
-	local nGone = 0
-	if tList ~= nil then
-		for i, r in ipairs(p.tRows) do
-			if r.nGoneMs == nil and fpCount(tList, r.sFp) < r.nFp then
-				r.nGoneMs = nMs
-				mark("lister_probe_gone")
-				log("probe_gone", { probe = p.nId, kind = p.sKind, n = i, guid = r.sTok or "none", key = r.sKey, ms = nMs })
-			end
-			if r.nGoneMs ~= nil then
-				nGone = nGone + 1
-			end
-		end
-	end
-	if (#p.tRows > 0 and nGone == #p.tRows) or t - p.nAt > self.nProbeWatch then
-		if nGone < #p.tRows then
-			mark("lister_probe_stay")
-		end
-		log("probe_end", { probe = p.nId, kind = p.sKind, ms = nMs, rows = #p.tRows, gone = nGone, busyMs = p.nBusyMs, idleMs = p.nIdleMs })
-		self.tProbe = nil
-	end
-end
-
-Lister._WrapQuick = function(self, StorageMode)
-	for _, t in ipairs({ { "OnQuickTradeAnimals", "quicktrade" }, { "OnReleaseAnimalsToWild", "release" } }) do
-		local sName, sKind = t[1], t[2]
-		local fnGame = StorageMode[sName]
-		if type(fnGame) ~= "function" then
-			trace("AnimalStorageHubMode." .. sName .. " not found; no probe for it")
-		elseif not StorageMode["_PZ2QoL_probe_" .. sName] then
-			StorageMode["_PZ2QoL_probe_" .. sName] = true
-			StorageMode[sName] = function(...)
-				-- the probe only logs: a release build has no log, so no probe
-				-- (it read the storage list while the game rebuilt it)
-				if tracing() then
-					local tArgs = table.pack(...)
-					local bOk, sErr = pcall(self._ProbeQuick, self, sKind, tArgs)
-					if not bOk then
-						mark("lister_probe_fail")
-						trace("probe " .. sKind .. " failed: " .. tostring(sErr))
-					end
-				end
-				-- the game's own handler, unchanged, with exactly what it got
-				-- (Phase 0b proved the shape { [1] = "animal_<n>" }; _QuickSend sends it)
-				local tRet = table.pack(fnGame(...))
-				pcall(self._ProbeAfter, self)
-				return table.unpack(tRet, 1, tRet.n)
-			end
-		end
-	end
-end
-
 Lister._PatchStorageMode = function(self, StorageMode)
-	local bWrapped, sWrapErr = pcall(self._WrapQuick, self, StorageMode)
-	if not bWrapped then
-		trace("quick probe wrappers failed: " .. tostring(sWrapErr))
-	end
 	local fnIn = StorageMode.TransitionIn
 	local fnOut = StorageMode.TransitionOut
 	local fnAdvance = StorageMode.Advance
@@ -3542,11 +3433,6 @@ Lister._PatchStorageMode = function(self, StorageMode)
 		-- row keys mean nothing outside Animal Storage: the run ends here
 		log("storage_close", { run = self.tRun and self.tRun.nId or nil, desk = self.tDesk ~= nil })
 		close("Animal Storage was closed.")
-		if self.tProbe ~= nil then
-			-- row keys mean nothing outside storage: the probe's watch ends too
-			log("probe_end", { probe = self.tProbe.nId, kind = self.tProbe.sKind, why = "storage closed" })
-			self.tProbe = nil
-		end
 		-- the desk's cleared filters go back before the game saves them
 		if self.tDesk ~= nil then
 			pcall(self._DeskRestore, self, "storage closed")
@@ -3562,12 +3448,6 @@ Lister._PatchStorageMode = function(self, StorageMode)
 			-- a check run's second clear, unless a new run selects by now
 			if self.tRun == nil then
 				pcall(hubFn("StorageUIClearSelectedItems"))
-			end
-		end
-		if self.tProbe ~= nil then
-			-- Phase 0b's watch of a vanilla quick trade / release (log only)
-			if not pcall(self._ProbeTick, self) then
-				self.tProbe = nil
 			end
 		end
 		if self.tRun ~= nil then

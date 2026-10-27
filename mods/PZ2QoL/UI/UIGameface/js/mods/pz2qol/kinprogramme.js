@@ -8,16 +8,23 @@
 //     fertility grade) x how long the pair can breed (fertile years left of
 //     the one that ages out first; old or infertile animals are not
 //     breeders)
-//   - relatives living together: a related, fertile male-female pair in one
-//     habitat is a heavy penalty, so the search removes it
+//   - relatives living together: a related male and female in one habitat,
+//     both able to breed some day (contracepted ones too), breaks a hard
+//     rule; so does going over the game's most adults per sex (animals.fdb,
+//     every adult counted)
 //   - adults over the habitat's room, breeders over the group make-up
 //   + a little per distinct family line (room to swap partners later)
 // minus the cost of the moves: each moved animal, joining an established
-// group, separating monogamous mates (they mourn).
+// group, moving in next to a juvenile relative of the other sex (it will
+// have to leave once grown), separating monogamous mates (they mourn).
 //
 // Monogamous mates living together pair only with each other, as the game
 // lets them (groupPairs); a breeder whose monogamous mate does not breed
 // pairs with no one while they share a habitat.
+//
+// Species where only the leader of a sex mates (animals.fdb Social_MatingRules:
+// hippos, lions, meerkats...) breed through that leader alone (leaderPairs):
+// any number may live together up to the game's limits per sex.
 //
 // Group make-up (groupRule): m males with f females. 1:1 pairs, 1:3 a male
 // with three females, 1:any a harem (one breeding male per habitat), any:1
@@ -27,9 +34,9 @@
 // the species, the mating system. In a habitat each male breeds with up to
 // f/m females (each female with up to m/f males) and the pairs are the best
 // possible set (maxWeightPairs, exact). Breeders beyond what the other sex
-// needs (1:3 with 4 females: 2 males) or over the game's most per sex are a
-// penalty, so the surplus moves on, and open places draw breeders in from
-// the trade centre and from other habitats' surplus.
+// needs (1:3 with 4 females: 2 males) are a penalty, so the surplus moves
+// on, and open places draw breeders in from the trade centre and from other
+// habitats' surplus.
 //
 // Habitat room (adults of this species) comes from the species' social
 // maximum and the habitat's space (estimated per animal from the game's own
@@ -44,10 +51,12 @@
 // they fill the make-up's places (option spareOut, on by default; developer
 // 2026-10-19: a 1:1 Eurasian lynx habitat kept a contracepted second male
 // for ever). The search places the breeders as if those places were free;
-// then each habitat keeps only as many non-breeders of each sex as the
-// make-up still has room for (contraception first, then the best genes)
-// and sends the rest to the trade centre (keepSpares). A pregnant, pinned or
-// away animal, and any with a mixed make-up, stays and counts as before.
+// then each habitat keeps the non-breeders that fit (keepSpares): no
+// relative of the other sex there, within the game's limits per sex and the
+// room, and with spareOut able to breed again and within the make-up's
+// places. One that doesn't fit moves to another habitat where it does
+// (rehomeSpares), else to the trade centre. A pregnant, pinned or away
+// animal stays and counts as before.
 //
 // Breeders waiting at the trade centre (bought, or sent there) count as
 // breeders with no group: the search may bring them into a habitat
@@ -78,7 +87,7 @@ export function programmeLogData(r) {
     if (!r || !r.rule) return {};
     const rule = r.rule;
     return {
-        makeup: ratioKey(rule), source: rule.source, system: rule.system, maxM: rule.maxMales, maxF: rule.maxFemales,
+        makeup: ratioKey(rule), source: rule.source, system: rule.system, maxM: rule.maxMales, maxF: rule.maxFemales, caps: rule.capsFromGame ? 'game' : 'none',
         groups: (r.groups || []).map(g => `${g.hab}:${g.males}m${g.females}f/${g.capacity == null ? '-' : g.capacity}+${g.staying || 0}`).join(' '),
         moves: r.moves ? r.moves.length : 0, score: Math.round(r.score * 1000) / 1000,
     };
@@ -92,14 +101,28 @@ export function programmeLogData(r) {
 // step only scores again the habitats it changes. Checked against every
 // layout on small zoos and against long runs on big ones
 // (tests/kinprogramme.test.mjs).
-import { predictOffspring, Sex, fertileNow, ownGrades, relationWord } from './kincore.js';
-import { TRADE, normalizeAssignments, assignedHabitatsOf, habitatAllowedFor } from './kinboardcore.js';
+import { bestOffspringScore, canBreedNow, offspringScore, overcrowdingOn, predictOffspring, Sex, fertileNow, kinTier, ownGrades, relationWord } from './kincore.js';
+import { TRADE, normalizeAssignments, assignedHabitatsOf, habitatAllowedFor, mustHouse, simulatePlan } from './kinboardcore.js';
+import { speciesRules } from './speciesrules.js';
+import { growthOf } from './kinlife.js';
+
+// A rule no layout may break: far above everything a layout can gain (every pair is worth at most 1).
+const HARD_LIMIT = 1000;
+
+// every page's Classic budget: it runs in slices, so it can search longer than a one-go call
+export const PROGRAMME_SEARCH = Object.freeze({ maxEvaluations: 3000000, timeBudgetMs: 6000 });
+
+// how far under the best pair's young an animal's best young may fall and it still breeds
+export const YOUNG_MARGIN = 10;
 
 export const PROGRAMME_DEFAULTS = Object.freeze({
     moveCost: 0.04,          // per moved animal, in pair-value units (0..1)
     bondBreakCost: 0.15,     // separating two monogamous mates (mourning)
     outsiderCost: 0.02,      // joining a habitat that already has this species
-    relatedPenalty: 2,       // per related fertile pair living together
+    relatedPenalty: HARD_LIMIT, // per related pair that can breed, living together
+    juvenileKinCost: 0.5,    // moving an adult in next to a juvenile relative of the other sex
+    growUpSoonYears: 1,      // a juvenile growing up within this is kin like an adult (it is never moved)
+    youngMargin: YOUNG_MARGIN,
     // Room and make-up are hard limits in practice: each penalty is well
     // above the best pair's value (0..1) and the line bonus, so no layout
     // gains by going over (2026-10-18: 1 let a third Sumatran tiger in once
@@ -107,6 +130,12 @@ export const PROGRAMME_DEFAULTS = Object.freeze({
     overCapacityPenalty: 2,  // per adult over capacity
     structurePenalty: 2,     // per breeder over the group make-up or the game's most per sex
     lineBonus: 0.01,         // per distinct family line in a habitat (future flexibility)
+    // the long run: a sire in a group is worth this share of each pairing he
+    // can give a young one of the other sex who is no kin of his and grows
+    // up while he still breeds (his daughters need another sire), at most
+    // futureMateCap; below structurePenalty, so it never buys a second sire
+    futureMateWeight: 0.25,
+    futureMateCap: 1,
     maxEvaluations: 600000,  // search budget: layout changes scored (about 0.4 s for 100 breeders)
     timeBudgetMs: 1500,      // safety net: stop searching after this long
     exactLimit: 20000,       // score every layout when there are no more than this many
@@ -114,6 +143,8 @@ export const PROGRAMME_DEFAULTS = Object.freeze({
     useTradeCentre: true,    // breeders waiting at the trade centre may join a group
     spareOut: true,          // non-breeding adults over the make-up go to the trade centre
     youngBack: true,         // young waiting at the trade centre go back to a habitat
+    houseBack: true,         // pregnant and past-selling adults waiting there go to a habitat
+    pairEvery: true,         // after the search: a breeding pair in every habitat the breeders allow
     ratio: 'auto',           // the player's group make-up (RATIO_CHOICES); 'auto': the game's
     seed: 0,                 // mixed into the zoo's own seed (tests)
     // the engine: 'classic' (one search, a few seconds) or 'deep' (many
@@ -125,7 +156,7 @@ export const PROGRAMME_DEFAULTS = Object.freeze({
     repair: 'light',         // deep: exact repairs, 'off' | 'light' | 'strong'
     warm: null,              // deep: the Classic plan's moves [{id, to}] (start 0)
     resume: null,            // deep: { round, base: [{id, to}] } from a stopped run (Continue)
-    classic: { maxEvaluations: 3000000, timeBudgetMs: 6000 }, // deep: start 0 when no warm plan
+    classic: PROGRAMME_SEARCH, // deep: start 0 when no warm plan
     wallLimitMs: Infinity,   // deep: wall-clock limit
     stop: null,              // deep: () => true ends the search (the best so far is kept)
     onStart: null,           // deep: ({ done, planned, bestStart, total, ms }) after each start
@@ -162,18 +193,16 @@ function fertGrade(a) {
     return d; // 0..6, the game's fertility grade x 6
 }
 
-// The animal's age limits and state decide whether it breeds.
-export function isBreeder(a, info = {}) {
-    if (!a || a.exhibit || a.juv || a.alive === false) return false;
-    if (a.contra) return false;
-    if (a.infertile) return false;              // sterile (contraception handled above)
-    const st = a.fert && a.fert.state;
-    if (st === 'old' || st === 'young' || st === 'sterile') return false;
-    const bounds = info.fertilityAges;
-    if (bounds && typeof a.age === 'number') {
-        if (bounds.maturity != null && a.age < bounds.maturity) return false;
-        if (bounds.infertility != null && bounds.infertility < 900 && a.age >= bounds.infertility) return false;
-    }
+// A 0% fertility gene counts as never conceiving
+// (the programme, Thin out, sell advice and storage suggestions alike).
+export function noFertility(a) {
+    return ownGrades(a && a.genes).fertility === 0;
+}
+
+// Breeds now by the game's own flags (kincore canBreedNow), so the badges,
+// alerts, the programme and Auto mode agree on every animal.
+export function isBreeder(a) {
+    if (!a || a.exhibit || a.alive === false || !canBreedNow(a)) return false;
     return a.sex === Sex.Male || a.sex === Sex.Female || a.sex === Sex.Unisex;
 }
 
@@ -267,8 +296,10 @@ const GROUP_ORDER = ['mixed', 'mixedLarge', 'pair'];
 
 // How the species' breeders form groups:
 //   m, f                 m males with f females (null: mixed groups)
-//   maxMales, maxFemales the game's most breeders of a sex per habitat (or null)
-//   source               'yours' (the player's choice), 'game' (the game's most
+//   maxMales, maxFemales the game's most adults of a sex in a mixed group (or null)
+//   leaderMale, leaderFemale        only the leading animal of that sex mates
+//   source               'leader' (only a leader mates: the game decides),
+//                        'yours' (the player's choice), 'game' (the game's most
 //                        per sex), 'groups' (the game's social groups for the
 //                        species), 'mating' (the mating system; 'mixed' for
 //                        Polygyandry, where both sexes take several mates),
@@ -276,12 +307,15 @@ const GROUP_ORDER = ['mixed', 'mixedLarge', 'pair'];
 //   system               the mating system ('mixed' when unknown)
 //   solitary             the game's groups are all of one sex (male alone,
 //                        female alone, bachelor groups): a solitary species
-// info.sexMax = { male, female } and info.groups = [{ kind, m, f }] come
-// from the game (Kin.SpeciesInfo); choice is a RATIO_CHOICES entry.
+// The per-sex limits and leaders come from the game's animals.fdb (speciesrules.js); info.sexMax
+// = { male, female } (read from the scan, a guess) only stands in for a species missing there.
+// info.groups = [{ kind, m, f }] come from the game (Kin.SpeciesInfo); choice is a RATIO_CHOICES entry.
 export function groupRule(info = {}, choice = 'auto') {
     const known = MATING.has(info && info.mating);
     const system = known ? info.mating : 'mixed';
-    const caps = info && info.sexMax && typeof info.sexMax === 'object' ? info.sexMax : {};
+    const game = speciesRules(info && info.species);
+    const scanned = info && info.sexMax && typeof info.sexMax === 'object' ? info.sexMax : {};
+    const caps = game ? { male: game.mixedMale, female: game.mixedFemale } : scanned;
     const allGroups = (info && Array.isArray(info.groups) ? info.groups : []).filter(g => g && typeof g === 'object');
     const solitary = allGroups.length > 0 && allGroups.every(g => !(g.m > 0 && g.f > 0));
     // without the game's most per sex: at most the group size less one (the
@@ -293,10 +327,15 @@ export function groupRule(info = {}, choice = 'auto') {
         f: r ? r.f : null,
         maxMales: caps.male > 0 ? Math.floor(caps.male) : derived,
         maxFemales: caps.female > 0 ? Math.floor(caps.female) : derived,
+        leaderMale: !!(game && game.leaderMale),
+        leaderFemale: !!(game && game.leaderFemale),
+        capsFromGame: !!game,
         source,
         system,
         solitary,
     });
+    // only the leader mates: any number may live together, the leader's pairs are what count
+    if (game && (game.leaderMale || game.leaderFemale)) return out(null, 'leader');
     const mine = parseRatio(choice);
     if (mine) return out(mine === 'mixed' ? null : mine, 'yours');
     const fromCaps = reduceRatio(caps.male, caps.female);
@@ -315,6 +354,18 @@ export function groupRule(info = {}, choice = 'auto') {
     // "Promiscuous", e.g. tigers and bears): mixed groups, as the game says
     if (known) return out(null, 'mating');
     return out(null, 'none');
+}
+
+// With the park's social groups off (a sandbox setting) no group rule binds
+// the animals; what counts is knowing every calf's father, so one breeding
+// male per habitat with any number of females (oneSire, a hard limit).
+// Leaders (only the leader mates: one sire already) and monogamous pairs
+// keep their own make-up, and the game's most per sex only as the
+// make-up's limit (overStructure), not as a hard one.
+export function sandboxRule(rule) {
+    if (!rule) return rule;
+    if (rule.leaderMale || rule.leaderFemale || rule.system === 'monogamy') return Object.assign({}, rule, { capsFromGame: false });
+    return Object.assign({}, rule, { m: 1, f: Infinity, maxMales: 1, maxFemales: null, capsFromGame: false, oneSire: true, source: 'sandbox' });
 }
 
 // The game's social group kinds (Kin.SpeciesInfo `groups[].kind`) in words.
@@ -354,7 +405,7 @@ function partnersPer(rule) {
 // make-up: { males, females }, the most pairs (ties: fewer of the scarce
 // sex), within the game's most per sex. null for mixed groups.
 export function groupTarget(rule, room) {
-    if (!rule || rule.m == null || !(room >= 1)) return null;
+    if (!rule || rule.m == null || !(room >= 1) || !Number.isFinite(room)) return null;
     room = Math.floor(room);
     const scarceIsMale = rule.m === 1;
     const k = scarceIsMale ? rule.f : rule.m;               // partners of one scarce-sex animal
@@ -483,10 +534,28 @@ export function maxWeightPairs(males, females, value, perMale = 1, perFemale = 1
 
 // ------------------------------------------------------------------ setup
 
-function relatedPair(model, a, b) {
+// Related by the game's rule or as close kin.
+export function relatedPair(model, a, b) {
     if (!a.guid || !b.guid) return false;
-    const rel = model.ped.relation(a.guid, b.guid);
-    return !!rel && (rel.game || rel.kinship >= model.closeKinship - 1e-9);
+    const tier = kinTier(model, model.ped.relation(a.guid, b.guid));
+    return tier === 'game' || tier === 'close';
+}
+
+// Old or sterile animals never breed again; a contracepted one may, and a juvenile will.
+export function canEverBreed(a) {
+    const s = a.fert && a.fert.state;
+    return s !== 'old' && s !== 'sterile';
+}
+
+// Elderly and past breeding: left where it is, still counted where it lives.
+function isRetired(a) {
+    return !!(a.fert && a.fert.state === 'old');
+}
+
+// Two animals that must not live together: the other sex, both able to breed some day, related.
+export function kinPair(model, a, b) {
+    const opposite = (isMaleSide(a.sex) && isFemaleSide(b.sex)) || (isFemaleSide(a.sex) && isMaleSide(b.sex));
+    return a !== b && opposite && canEverBreed(a) && canEverBreed(b) && relatedPair(model, a, b);
 }
 
 function lineOf(a) {
@@ -548,7 +617,7 @@ function hashSeed(s) {
 }
 
 // mulberry32: a small seeded random source (the same plan every time)
-function randomSource(seed) {
+export function randomSource(seed) {
     let a = seed >>> 0;
     return () => {
         a = (a + 0x6D2B79F5) >>> 0;
@@ -583,6 +652,31 @@ function makeBudget(opts) {
     return b;
 }
 
+// What each breeder is worth to the young of the other sex growing up in
+// the zoo (opts.futureMateWeight): only the sires of the rule (the males
+// of a harem, the females of a reverse one, both otherwise).
+// -> { value: per breeder, count: how many such young per breeder }
+function futureMateValues(model, info, opts, rule, breeders, all) {
+    const sires = harem(rule) ? isMaleSide : reverseHarem(rule) ? isFemaleSide : null;
+    const young = all.filter(a => a.juv && canEverBreed(a) && !noFertility(a));
+    const value = new Float64Array(breeders.length), count = new Int32Array(breeders.length);
+    breeders.forEach((b, i) => {
+        if (sires && !sires(b.sex)) return;
+        const left = fertileYearsLeft(b, info);
+        let v = 0;
+        for (const j of young) {
+            const opposite = (isMaleSide(b.sex) && isFemaleSide(j.sex)) || (isFemaleSide(b.sex) && isMaleSide(j.sex));
+            if (!opposite || relatedPair(model, b, j)) continue;
+            const g = growthOf(j);
+            if (left != null && g && g.years >= left) continue;
+            v += youngQuality(b, j) * conceptionChance(b, j, info);
+            count[i]++;
+        }
+        value[i] = Math.min(opts.futureMateCap, opts.futureMateWeight * v);
+    });
+    return { value, count };
+}
+
 // The search's view of the species: breeders by index, places by index
 // (the habitats, the breeders' own habitats, the trade centre).
 function makeContext(model, info, opts, breeders, all, habitats, home, spares = []) {
@@ -595,22 +689,21 @@ function makeContext(model, info, opts, breeders, all, habitats, home, spares = 
     const trade = placeOf.get(TRADE);
     const groupPlace = placeKeys.map(k => k !== TRADE && k !== AWAY);
     const allowed = new Set(habitats);
-    const fixedAdults = new Map();
-    // the staying adults' sexes per habitat (the make-up's places they take)
-    const fixedSex = new Map();
+    // juveniles stay put; soonAt: those that grow up soon, kin like the adults staying there
+    const youngAt = new Map(), soonAt = new Map();
     const spareSet = new Set(spares);
     for (const a of all) {
-        if (breeders.includes(a) || spareSet.has(a) || a.juv || !a.hab) continue;
-        fixedAdults.set(a.hab, (fixedAdults.get(a.hab) || 0) + 1);
-        const s = fixedSex.get(a.hab) || { m: 0, f: 0 };
-        if (a.sex === Sex.Male) s.m++;
-        else if (a.sex === Sex.Female) s.f++;
-        fixedSex.set(a.hab, s);
+        if (!a.juv || !a.hab || a.lt === 'trade') continue;
+        const g = growthOf(a);
+        const at = g && g.kind === 'adult' && g.years <= opts.growUpSoonYears ? soonAt : youngAt;
+        at.set(a.hab, [...(at.get(a.hab) || []), a]);
     }
     const capacity = new Map();
-    for (const k of placeKeys) if (k !== TRADE && k !== AWAY) capacity.set(k, habitatCapacity(info, k, opts.defaultCapacity));
+    const crowding = overcrowdingOn(model);
+    for (const k of placeKeys) if (k !== TRADE && k !== AWAY) capacity.set(k, crowding ? habitatCapacity(info, k, opts.defaultCapacity) : Infinity);
     const established = new Set(all.filter(a => a.hab && !a.juv).map(a => a.hab));
-    const rule = groupRule(info, opts.ratio);
+    const gameRule = groupRule(info, opts.ratio);
+    const rule = model.rules && model.rules.socialGroups === false ? sandboxRule(gameRule) : gameRule;
     const per = partnersPer(rule);
     const ctx = {
         model, info, opts, rule, per, n, P, placeKeys, placeOf, trade, groupPlace,
@@ -618,10 +711,11 @@ function makeContext(model, info, opts, breeders, all, habitats, home, spares = 
         sex: breeders.map(a => a.sex),
         line: breeders.map(lineOf),
         home: Int32Array.from(breeders.map(a => placeOf.get(home.get(a.id)))),
-        fixed: placeKeys.map(k => fixedAdults.get(k) || 0),
         cap: placeKeys.map(k => (capacity.has(k) ? capacity.get(k) : null)),
         estab: placeKeys.map(k => established.has(k)),
-        capacity, fixedAdults, fixedSex, spares,
+        capacity, spares, youngAt, soonAt,
+        // adults the plan never moves (not breeders, not spares)
+        stayingBase: all.filter(a => !a.juv && a.hab && !breeders.includes(a) && !spareSet.has(a)),
         memo: new Map(),
         pvCache: new Float64Array(n * n).fill(NaN),
         // random words for the score cache's keys (32 + 21 bits)
@@ -637,6 +731,12 @@ function makeContext(model, info, opts, breeders, all, habitats, home, spares = 
         ctx.zpA[q] = Math.floor(zr() * 4294967296);
         ctx.zpB[q] = Math.floor(zr() * 2097152);
     }
+    const future = futureMateValues(model, info, opts, rule, breeders, all);
+    ctx.futureMates = future.value;
+    ctx.futureMateCount = future.count;
+    withStaying(ctx, []);
+    ctx.kinWithYoung = kinCounter(ctx, youngAt);
+    ctx.kinWithSoon = kinCounter(ctx, soonAt);
     ctx.maleSide = ctx.all.filter(i => isMaleSide(ctx.sex[i]));
     ctx.femaleSide = ctx.all.filter(i => isFemaleSide(ctx.sex[i]));
     ctx.allowedPlace = placeKeys.map(k => allowed.has(k));
@@ -659,7 +759,7 @@ function makeContext(model, info, opts, breeders, all, habitats, home, spares = 
     ctx.pv = (m, f) => {
         const k = m * n + f;
         let v = ctx.pvCache[k];
-        if (v !== v) {
+        if (Number.isNaN(v)) {
             const a = breeders[m], b = breeders[f];
             v = relatedPair(model, a, b) ? -1 : youngQuality(a, b) * conceptionChance(a, b, info) * longevityWeight(a, b, info);
             ctx.pvCache[k] = v;
@@ -712,6 +812,38 @@ function makeContext(model, info, opts, breeders, all, habitats, home, spares = 
     return ctx;
 }
 
+// Breeder i's relatives of the other sex among byHab's animals at place p (cached).
+function kinCounter(ctx, byHab) {
+    const cache = new Map();
+    return (i, p) => {
+        const key = i * ctx.P + p;
+        let count = cache.get(key);
+        if (count === undefined) {
+            count = (byHab.get(ctx.placeKeys[p]) || []).filter(a => kinPair(ctx.model, ctx.B[i], a)).length;
+            cache.set(key, count);
+        }
+        return count;
+    };
+}
+
+// The adults the score counts as staying put: the ones the plan never
+// moves, and `spares` (non-breeders, each in its habitat), for the room,
+// the game's most per sex and relatives alike.
+function withStaying(ctx, spares) {
+    const stayingAt = new Map(), fixedAdults = new Map(), fixedSex = new Map();
+    for (const a of ctx.stayingBase.concat(spares)) {
+        stayingAt.set(a.hab, [...(stayingAt.get(a.hab) || []), a]);
+        fixedAdults.set(a.hab, (fixedAdults.get(a.hab) || 0) + 1);
+        const s = fixedSex.get(a.hab) || { m: 0, f: 0 };
+        if (a.sex === Sex.Male) s.m++;
+        else if (a.sex === Sex.Female) s.f++;
+        fixedSex.set(a.hab, s);
+    }
+    Object.assign(ctx, { stayingAt, fixedAdults, fixedSex, fixed: ctx.placeKeys.map(k => fixedAdults.get(k) || 0) });
+    ctx.kinWithStaying = kinCounter(ctx, stayingAt);
+    ctx.memo.clear();
+}
+
 // ------------------------------------------------------------- evaluation
 
 // The breeding pairs of one habitat's (place p) breeders (indices), under the
@@ -720,6 +852,7 @@ function makeContext(model, info, opts, breeders, all, habitats, home, spares = 
 // a breeder whose monogamous mate lives there and does not breed (old,
 // contracepted) pairs with no one. The rest are matched freely.
 function groupPairs(ctx, list, p) {
+    if (ctx.rule.leaderMale || ctx.rule.leaderFemale) return leaderPairs(ctx, list);
     if (!ctx.hasMono) return freePairs(ctx, list);
     const here = new Set(list);
     const out = [], free = [];
@@ -737,6 +870,30 @@ function groupPairs(ctx, list, p) {
         else free.push(i);
     }
     return free.length < 2 ? out : out.concat(freePairs(ctx, free));
+}
+
+// Only the leading animal of a sex mates (animals.fdb OnlyLeaderMaleCanMate / FemaleCanMate): the
+// leader worth the most with every partner of the other sex, or with leaders of both sexes the
+// one best couple. The others of the leader's sex live there without breeding.
+function leaderPairs(ctx, list) {
+    const males = list.filter(i => isMaleSide(ctx.sex[i]));
+    const females = list.filter(i => isFemaleSide(ctx.sex[i]));
+    const worth = pairs => pairs.reduce((s, pr) => s + pr[0], 0);
+    const pairsWith = (others, pairOf) => others.map(pairOf).filter(pr => pr[1] !== pr[2] && pr[0] > 0);
+    let best = [];
+    if (ctx.rule.leaderMale && ctx.rule.leaderFemale) {
+        for (const m of males) {
+            for (const pr of pairsWith(females, f => [ctx.pv(m, f), m, f])) if (!best.length || pr[0] > best[0][0]) best = [pr];
+        }
+        return best;
+    }
+    for (const leader of ctx.rule.leaderMale ? males : females) {
+        const pairs = ctx.rule.leaderMale
+            ? pairsWith(females, f => [ctx.pv(leader, f), leader, f])
+            : pairsWith(males, m => [ctx.pv(m, leader), m, leader]);
+        if (worth(pairs) > worth(best)) best = pairs;
+    }
+    return best;
 }
 
 // The best pairs among breeders free to choose (maxWeightPairs). A unisex
@@ -778,16 +935,39 @@ function relatedCount(ctx, list) {
     return n;
 }
 
+// Breeders of a place related to adults that stay there anyway (not breeders, not moved).
+function residentKin(ctx, p, list) {
+    let n = 0;
+    for (const i of list) n += ctx.kinWithStaying(i, p) + ctx.kinWithSoon(i, p);
+    return n;
+}
+
 // Breeders over the make-up: males beyond what the females need (1:3 with
-// 4 females: 2), or beyond the game's most per sex; the same for females.
+// 4 females: 2); the same for females, and for 1:1 either sex beyond the
+// other. Without the game's limits for the species, also beyond the scan's
+// guess at its most per sex.
 function overStructure(ctx, nm, nf) {
     const r = ctx.rule;
     let allowM = Infinity, allowF = Infinity;
     if (harem(r)) allowM = Math.max(1, Math.ceil(nf / r.f));
     else if (reverseHarem(r)) allowF = Math.max(1, Math.ceil(nm / r.m));
-    if (r.maxMales != null) allowM = Math.min(allowM, r.maxMales);
-    if (r.maxFemales != null) allowF = Math.min(allowF, r.maxFemales);
+    else if (r.m === 1 && r.f === 1) {
+        allowM = Math.max(1, nf);
+        allowF = Math.max(1, nm);
+    }
+    if (!r.capsFromGame && r.maxMales != null) allowM = Math.min(allowM, r.maxMales);
+    if (!r.capsFromGame && r.maxFemales != null) allowF = Math.min(allowF, r.maxFemales);
     return Math.max(0, nm - allowM) + Math.max(0, nf - allowF);
+}
+
+// Adults over the game's most per sex in a mixed group, every adult counted.
+// A breeding habitat is a mixed group even while it holds one sex only, so
+// the larger one-sex (bachelor) limits never apply: they would let a
+// habitat waiting for females fill up with males.
+export function overSexLimits(rule, males, females) {
+    if (!rule || !rule.capsFromGame) return 0;
+    return (rule.maxMales != null ? Math.max(0, males - rule.maxMales) : 0)
+        + (rule.maxFemales != null ? Math.max(0, females - rule.maxFemales) : 0);
 }
 
 // Score of one place's breeders (indices); cached by who is there.
@@ -803,14 +983,18 @@ function placeScore(ctx, p, list) {
     const hit = ctx.memo.get(key);
     if (hit !== undefined) return hit;
     const P = ctx.opts;
-    let value = 0, penalty = relatedCount(ctx, list) * P.relatedPenalty;
+    let value = 0, penalty = (relatedCount(ctx, list) + residentKin(ctx, p, list)) * P.relatedPenalty;
     for (const pr of groupPairs(ctx, list, p)) value += pr[0];
+    for (const i of list) value += ctx.futureMates[i];
     let nm = 0, nf = 0;
     for (const i of list) {
         if (ctx.sex[i] === Sex.Male) nm++;
         else if (ctx.sex[i] === Sex.Female) nf++;
     }
     penalty += overStructure(ctx, nm, nf) * P.structurePenalty;
+    if (ctx.rule.oneSire && nm > 1) penalty += (nm - 1) * HARD_LIMIT;
+    const staying = ctx.fixedSex.get(ctx.placeKeys[p]) || { m: 0, f: 0 };
+    penalty += overSexLimits(ctx.rule, nm + staying.m, nf + staying.f) * HARD_LIMIT;
     const adults = list.length + ctx.fixed[p];
     const cap = ctx.cap[p];
     if (cap != null && adults > cap) penalty += (adults - cap) * P.overCapacityPenalty;
@@ -825,7 +1009,8 @@ function placeScore(ctx, p, list) {
 
 function moveCost(ctx, i, p) {
     if (p === ctx.home[i]) return 0;
-    return ctx.opts.moveCost + (ctx.groupPlace[p] && ctx.estab[p] ? ctx.opts.outsiderCost : 0);
+    return ctx.opts.moveCost + (ctx.groupPlace[p] && ctx.estab[p] ? ctx.opts.outsiderCost : 0)
+        + ctx.kinWithYoung(i, p) * ctx.opts.juvenileKinCost;
 }
 
 // a bond is broken when one of the two moved and they live apart
@@ -1157,7 +1342,9 @@ function reassign(ctx, st, side) {
     if (m < n) return null;
     const P = ctx.opts;
     const cost = new Float64Array(n * m);
-    const related = new Map();
+    // per mover and place, as a place has many columns: the move and the
+    // relatives there, and its best partner there
+    const baseOf = new Float64Array(n * ctx.P).fill(NaN), bestOf = new Float64Array(n * ctx.P);
     for (let a = 0; a < n; a++) {
         const i = movers[a];
         for (let b = 0; b < m; b++) {
@@ -1166,22 +1353,22 @@ function reassign(ctx, st, side) {
                 cost[a * m + b] = 1e6;
                 continue;
             }
-            let v = -moveCost(ctx, i, c.p);
-            if (ctx.groupPlace[c.p]) {
-                const key = i * ctx.P + c.p;
-                let rel = related.get(key);
-                if (rel === undefined) {
-                    rel = 0;
+            const key = a * ctx.P + c.p;
+            if (Number.isNaN(baseOf[key])) {
+                let base = -moveCost(ctx, i, c.p), best = 0;
+                if (ctx.groupPlace[c.p]) {
+                    let rel = 0;
                     for (const y of st.members[c.p]) if (!isMover[y] && ctx.compatible(i, y) && ctx.pvAny(i, y) < 0) rel++;
-                    related.set(key, rel);
-                }
-                v -= rel * P.relatedPenalty;
-                if (c.x >= 0) v += Math.max(0, pvOf(c.x, i));
-                else if (c.x === -2) {
-                    let best = 0;
+                    base -= rel * P.relatedPenalty;
                     for (const x of c.partners) best = Math.max(best, pvOf(x, i));
-                    v += best;
                 }
+                baseOf[key] = base;
+                bestOf[key] = best;
+            }
+            let v = baseOf[key];
+            if (ctx.groupPlace[c.p]) {
+                if (c.x >= 0) v += Math.max(0, pvOf(c.x, i));
+                else if (c.x === -2) v += bestOf[key];
             }
             cost[a * m + b] = -v;
         }
@@ -1349,25 +1536,35 @@ function* solveLayout(ctx) {
     const st = makeState(ctx, Int32Array.from(ctx.home));
     const count = layoutCount(ctx, ctx.opts.exactLimit);
     if (count <= ctx.opts.exactLimit) return { place: yield* exhaustive(ctx, st, count), exact: true };
-    const B = ctx.budget;
-    const rnd = ctx.rnd;
     yield* localSearch(ctx, st);
     if (intensify(ctx, st)) yield* localSearch(ctx, st);
     yield progress(ctx);
-    const best = { total: st.total, place: Int32Array.from(st.place) };
     const rounds = Math.min(6000, 300 + 40 * ctx.n);
-    const stopAt = Math.floor(B.limit * 0.85);
+    const { place } = yield* annealRounds(ctx, st, ctx.rnd, rounds, { stopAt: Math.floor(ctx.budget.limit * 0.85) });
+    return { place, exact: false };
+}
+
+// Rounds of a kick, a ruin and recreate or (with `repair`) an exact repair,
+// each settled by local search and kept or not by simulated annealing
+// (cooling over the rounds), until `stopAt` evaluations; then the best
+// layout seen, polished. -> { total, place }
+function* annealRounds(ctx, st, rnd, rounds, { stopAt = Infinity, repair = false, yieldEvery = 1 } = {}) {
+    const B = ctx.budget;
+    const best = { total: st.total, place: Int32Array.from(st.place) };
     const T0 = 0.03, T1 = 0.001;
-    const cool = Math.pow(T1 / T0, 1 / rounds);
+    const cool = Math.pow(T1 / T0, 1 / Math.max(1, rounds));
     let T = T0;
     for (let it = 0; it < rounds && B.evals < stopAt && !B.out(); it++) {
         const snap = Int32Array.from(st.place);
         const before = st.total;
-        const list = rnd() < 0.8 ? kick(ctx, st, rnd) : ruinRecreate(ctx, st, rnd);
+        const r = rnd();
+        let list = [];
+        if (repair && r < 0.1) yield* repairExact(ctx, st, rnd);
+        else list = r < 0.8 ? kick(ctx, st, rnd) : ruinRecreate(ctx, st, rnd);
         // settle: the breeders moved and the groups they joined
         const touched = new Set(list);
         for (const i of list) for (const j of st.members[st.place[i]]) touched.add(j);
-        yield* localSearch(ctx, st, { swaps: false, pairs: false, only: Array.from(touched) });
+        if (touched.size) yield* localSearch(ctx, st, { swaps: false, pairs: false, only: Array.from(touched) });
         const d = st.total - before;
         if (d > -EPS || rnd() < Math.exp(d / T)) {
             if (st.total > best.total + EPS) {
@@ -1377,12 +1574,12 @@ function* solveLayout(ctx) {
         }
         else restore(ctx, st, snap);
         T *= cool;
-        yield progress(ctx);
+        if (it % yieldEvery === yieldEvery - 1) yield progress(ctx);
     }
     restore(ctx, st, best.place);
     intensify(ctx, st);
     yield* localSearch(ctx, st);
-    return { place: Int32Array.from(st.place), exact: false };
+    return { total: st.total, place: Int32Array.from(st.place) };
 }
 
 // ------------------------------------------------------------ deep search
@@ -1485,47 +1682,12 @@ function* rebuild(ctx, st, rnd, frac) {
     yield* placeBack(ctx, st, list);
 }
 
-// One start: a settle, then rounds of a kick, a ruin and recreate or an
-// exact repair, kept or not by simulated annealing (cooling over the
-// start's rounds). -> the start's best { total, place }.
+// One start: a settle, then the annealing rounds with exact repairs.
+// -> the start's best { total, place }.
 function* deepStart(ctx, st, rnd, rounds) {
-    const B = ctx.budget;
     yield* localSearch(ctx, st);
     if (intensify(ctx, st)) yield* localSearch(ctx, st);
-    const best = { total: st.total, place: Int32Array.from(st.place) };
-    const T0 = 0.03, T1 = 0.001;
-    const cool = Math.pow(T1 / T0, 1 / Math.max(1, rounds));
-    const repair = !!REPAIR[ctx.opts.repair];
-    let T = T0;
-    for (let it = 0; it < rounds && !B.out(); it++) {
-        const snap = Int32Array.from(st.place);
-        const before = st.total;
-        const r = rnd();
-        let list = [];
-        if (repair && r < 0.1) yield* repairExact(ctx, st, rnd);
-        else list = r < 0.8 ? kick(ctx, st, rnd) : ruinRecreate(ctx, st, rnd);
-        const touched = new Set(list);
-        for (const i of list) for (const j of st.members[st.place[i]]) touched.add(j);
-        if (touched.size) yield* localSearch(ctx, st, { swaps: false, pairs: false, only: Array.from(touched) });
-        const d = st.total - before;
-        if (d > -EPS || rnd() < Math.exp(d / T)) {
-            if (st.total > best.total + EPS) {
-                best.total = st.total;
-                best.place = Int32Array.from(st.place);
-            }
-        }
-        else restore(ctx, st, snap);
-        T *= cool;
-        if ((it & 3) === 3) yield progress(ctx);
-    }
-    restore(ctx, st, best.place);
-    intensify(ctx, st);
-    yield* localSearch(ctx, st);
-    if (st.total > best.total + EPS) {
-        best.total = st.total;
-        best.place = Int32Array.from(st.place);
-    }
-    return best;
+    return yield* annealRounds(ctx, st, rnd, rounds, { repair: !!REPAIR[ctx.opts.repair], yieldEvery: 4 });
 }
 
 // Moves [{id, to}] -> a layout (from home): moves of animals that are not
@@ -1570,7 +1732,7 @@ function* solveDeep(ctx) {
     restore(ctx, st, base);
     // shown: the best seen (the plan); best: the best at the start of the round
     let best = { total: st.total, place: Int32Array.from(base) };
-    let shown = best, bestStart = 0, done = round * DEEP_ROUND, quiet = 0;
+    let shown = best, bestStart = 0, done = Math.min(K, round * DEEP_ROUND), quiet = 0;
     if (O.resume && Array.isArray(O.resume.base)) {
         // Continue: the plan shown when it stopped stays the plan unless a
         // start beats it; the quiet rounds count on (Stop early)
@@ -1640,6 +1802,11 @@ function* solveDeep(ctx) {
             }
             else calm++;
         }
+        if (wall.out()) {
+            // cut short in the polish: Continue runs the polish again
+            stopped = wall.stopped ? 'stop' : 'time';
+            resume = { round: roundsOfStarts, base: movesOf(ctx, best.place), shown: movesOf(ctx, shown.place), quiet, bestStart };
+        }
         intensify(ctx, st);
         yield* localSearch(ctx, st);
     }
@@ -1678,11 +1845,41 @@ function prune(ctx, place) {
     return st.place;
 }
 
-// Which non-breeding adults (ctx.spares) stay: per habitat and sex, the
-// make-up's places (groupTarget for the habitat's room) left after the
-// breeders the plan puts there and the adults that stay anyway, and never
-// over the room. Contracepted animals first (they can breed again), then the
-// best own genes. -> { kept, leave }
+// The adults in a habitat after the plan: its breeders there and the adults that stay anyway.
+function adultsAt(ctx, place, hab) {
+    const out = (ctx.stayingAt.get(hab) || []).slice();
+    for (let i = 0; i < ctx.n; i++) if (ctx.placeKeys[place[i]] === hab) out.push(ctx.B[i]);
+    return out;
+}
+
+// The make-up's places per sex in a habitat when spare adults go out (option spareOut), else null.
+function makeupPlaces(ctx, hab) {
+    const cap = ctx.capacity.has(hab) ? ctx.capacity.get(hab) : null;
+    const target = ctx.opts.spareOut !== false && cap != null ? groupTarget(ctx.rule, cap) : null;
+    return target ? { [Sex.Male]: target.males, [Sex.Female]: target.females } : null;
+}
+
+// Why non-breeding adult `a` can't live with `adults` in `hab`, or null when it can.
+function misfit(ctx, a, adults, hab) {
+    const cap = ctx.capacity.has(hab) ? ctx.capacity.get(hab) : null;
+    if (adults.some(b => kinPair(ctx.model, a, b))) return 'kin';
+    if ((ctx.soonAt.get(hab) || []).some(b => kinPair(ctx.model, a, b))) return 'soon';
+    const count = (list, sex) => list.filter(b => b.sex === sex).length;
+    const m = count(adults, Sex.Male), f = count(adults, Sex.Female);
+    const add = sex => (a.sex === sex ? 1 : 0);
+    if (overSexLimits(ctx.rule, m + add(Sex.Male), f + add(Sex.Female)) > overSexLimits(ctx.rule, m, f)) return 'limit';
+    if (cap != null && adults.length + 1 > cap) return 'room';
+    const places = makeupPlaces(ctx, hab);
+    if (places && count(adults, a.sex) >= places[a.sex]) return 'makeup';
+    return null;
+}
+
+// Which non-breeding adults (ctx.spares) stay where they are, contracepted
+// ones first (they can breed again), then the best own genes. One leaves
+// (with why) when it is related to an adult of the other sex there, would
+// take the habitat over the game's most per sex or its room, or, with
+// spare adults going out (option spareOut), can never breed again or finds
+// the make-up's places for its sex taken. -> { kept, leave: [{ a, why }] }
 function keepSpares(ctx, place) {
     const kept = [], leave = [];
     if (!ctx.spares || !ctx.spares.length) return { kept, leave };
@@ -1691,38 +1888,336 @@ function keepSpares(ctx, place) {
         if (!byHab.has(a.hab)) byHab.set(a.hab, []);
         byHab.get(a.hab).push(a);
     }
+    const order = (x, y) => (y.contra ? 1 : 0) - (x.contra ? 1 : 0) || ownGeneScore(y) - ownGeneScore(x) || (String(x.id) < String(y.id) ? -1 : 1);
     for (const [hab, list] of byHab) {
-        const cap = ctx.capacity.has(hab) ? ctx.capacity.get(hab) : null;
-        const target = cap == null ? null : groupTarget(ctx.rule, cap);
-        if (!target || !ctx.placeOf.has(hab)) {
-            kept.push(...list);
-            continue;
-        }
-        const p = ctx.placeOf.get(hab);
-        let nm = 0, nf = 0, n = 0;
-        for (let i = 0; i < ctx.n; i++) {
-            if (place[i] !== p) continue;
-            n++;
-            if (ctx.sex[i] === Sex.Male) nm++;
-            else if (ctx.sex[i] === Sex.Female) nf++;
-        }
-        const fs = ctx.fixedSex.get(hab) || { m: 0, f: 0 };
-        let room = cap - n - (ctx.fixedAdults.get(hab) || 0);
-        const order = (x, y) => (y.contra ? 1 : 0) - (x.contra ? 1 : 0) || ownGeneScore(y) - ownGeneScore(x) || (String(x.id) < String(y.id) ? -1 : 1);
-        for (const [sex, places] of [[Sex.Male, target.males - nm - fs.m], [Sex.Female, target.females - nf - fs.f]]) {
-            let slots = Math.max(0, places);
-            for (const a of list.filter(x => x.sex === sex).sort(order)) {
-                if (slots > 0 && room > 0) {
-                    kept.push(a);
-                    slots--;
-                    room--;
-                }
-                else leave.push(a);
+        const adults = adultsAt(ctx, place, hab);
+        const keptHere = [];
+        for (const a of list.slice().sort(order)) {
+            const out = ctx.opts.spareOut !== false;
+            const why = out && noFertility(a) ? 'nofert' : out && ctx.weak.has(a.id) ? 'weak' : out && !canEverBreed(a) ? 'never' : misfit(ctx, a, adults, hab);
+            if (why) leave.push({ a, why });
+            else {
+                keptHere.push(a);
+                adults.push(a);
             }
+        }
+        // one whose young would meet the standard but has no partner here joins a group elsewhere
+        // (a weak one has no match worth breeding; contraception is the player's choice)
+        for (const a of keptHere) {
+            if (!a.contra && !ctx.weak.has(a.id) && canEverBreed(a) && !hasPartnerSex(a, adults)) leave.push({ a, why: 'alone' });
+            else kept.push(a);
         }
     }
     return { kept, leave };
 }
+
+const hasPartnerSex = (a, adults) => adults.some(b => (a.sex === Sex.Male && b.sex === Sex.Female) || (a.sex === Sex.Female && b.sex === Sex.Male));
+
+// Where each leaving adult goes: the roomiest allowed habitat it fits in,
+// with no juvenile relative of the other sex there either; else the trade
+// centre, where animals sent on to storage stop growing up. One that can
+// never breed again goes to the trade centre. -> [{ a, why, to }]
+function rehomeSpares(ctx, place, kept, leave) {
+    const adultsOf = new Map(ctx.groupPlaces.map(p => [ctx.placeKeys[p], adultsAt(ctx, place, ctx.placeKeys[p])]));
+    for (const a of kept) if (adultsOf.has(a.hab)) adultsOf.get(a.hab).push(a);
+    return leave.map(({ a, why }) => {
+        let best = null;
+        for (const [hab, adults] of why === 'never' || why === 'weak' || why === 'nofert' ? [] : adultsOf) {
+            if (hab === a.hab || misfit(ctx, a, adults, hab) || (ctx.youngAt.get(hab) || []).some(y => kinPair(ctx.model, a, y))) continue;
+            if (why === 'alone' && !hasPartnerSex(a, adults)) continue;
+            const cap = ctx.capacity.has(hab) ? ctx.capacity.get(hab) : Infinity;
+            if (!best || cap - adults.length > best.room) best = { hab, room: cap - adults.length };
+        }
+        if (best) adultsOf.get(best.hab).push(a);
+        // alone with no group to join: it stays (spares are kept) and its habitat asks for a partner
+        return { a, why, to: best ? best.hab : why === 'alone' ? a.hab : TRADE };
+    });
+}
+
+// Elderly animals past breeding that take the last place of their sex in a
+// breeding habitat (the game's most per sex): no breeder of that sex can
+// join while they live. -> [{ id, hab, sex }]
+function retiredBlockers(ctx, place) {
+    const out = [];
+    for (const p of ctx.groupPlaces) {
+        const hab = ctx.placeKeys[p];
+        const adults = adultsAt(ctx, place, hab);
+        const m = adults.filter(a => a.sex === Sex.Male).length, f = adults.filter(a => a.sex === Sex.Female).length;
+        for (const a of adults) {
+            if (!isRetired(a)) continue;
+            const more = a.sex === Sex.Male ? overSexLimits(ctx.rule, m + 1, f) : overSexLimits(ctx.rule, m, f + 1);
+            if (more > overSexLimits(ctx.rule, m, f)) out.push({ id: a.id, hab, sex: a.sex });
+        }
+    }
+    return out;
+}
+
+// A layout that sends every breeder of a sex in the habitats to the trade
+// centre: Auto mode keeps the last one (kinautocore keepLastBreeders), so
+// the moves planned around its leaving would be wrong. -> the one to keep
+// at home (the best, where no relative of the other sex lives), or -1
+function lastBreederSent(ctx, place) {
+    for (const side of [ctx.maleSide, ctx.femaleSide]) {
+        const housed = side.filter(i => ctx.groupPlace[ctx.home[i]]);
+        if (!housed.length || housed.some(i => place[i] !== ctx.trade)) continue;
+        const home = i => ctx.home[i];
+        const kinAtHome = i => ctx.kinWithStaying(i, home(i)) + ctx.kinWithSoon(i, home(i)) > 0
+            || ctx.all.some(k => k !== i && place[k] === home(i) && ctx.compatible(i, k) && ctx.pvAny(i, k) < 0);
+        const best = housed.filter(i => !ctx.pinned[i] && !kinAtHome(i)).sort((x, y) => (ownGeneScore(ctx.B[y]) ?? 0) - (ownGeneScore(ctx.B[x]) ?? 0))[0];
+        if (best != null) return best;
+    }
+    return -1;
+}
+
+// A breeding pair (unrelated breeders of the two sexes) at place q.
+function hasPair(ctx, place, q) {
+    for (let i = 0; i < ctx.n; i++) {
+        if (place[i] !== q) continue;
+        for (let j = i + 1; j < ctx.n; j++) if (place[j] === q && ctx.compatible(i, j) && ctx.pvAny(i, j) > 0) return true;
+    }
+    return false;
+}
+
+// Breeder i may join place p without leaving its own group short of a pair.
+function canJoin(ctx, place, i, p) {
+    if (place[i] === p) return true;
+    if (ctx.pinned[i] || !ctx.canGo(i, p)) return false;
+    const from = place[i];
+    if (from === ctx.trade || !hasPair(ctx, place, from)) return true;
+    place[i] = p;
+    const kept = hasPair(ctx, place, from);
+    place[i] = from;
+    return kept;
+}
+
+// Every habitat set aside for the species keeps a breeding pair while the
+// breeders allow one: of the habitats the plan leaves without a pair, each
+// round pairs the one whose male and female cost the plan least to bring
+// (from the trade centre or a group that keeps its own pair), until none
+// can be paired. The other breeders still go where their young score best.
+// -> Set(breeder index) placed for a pair
+function pairEveryHabitat(ctx, place) {
+    const placed = new Set();
+    if (ctx.B.some(a => a.sex === Sex.Unisex)) return placed;
+    for (;;) {
+        let best = null;
+        for (const p of ctx.groupPlaces) {
+            if (hasPair(ctx, place, p)) continue;
+            const pick = bestPairFor(ctx, place, p);
+            if (pick && (!best || pick.total > best.total)) best = Object.assign({ p }, pick);
+        }
+        if (!best) return placed;
+        for (const i of [best.m, best.f]) {
+            if (place[i] === best.p) continue;
+            place[i] = best.p;
+            placed.add(i);
+        }
+    }
+}
+
+// The male and female to pair at place p, the layout's total with them
+// there; every other pair stays. -> { m, f, total } or null
+function bestPairFor(ctx, place, p) {
+    const others = ctx.groupPlaces.filter(q => q !== p && hasPair(ctx, place, q));
+    // within the game's most per sex and the habitat's room, as the adults there stand
+    const adults = adultsAt(ctx, place, ctx.placeKeys[p]);
+    const males = adults.filter(a => a.sex === Sex.Male).length, females = adults.filter(a => a.sex === Sex.Female).length;
+    const fits = (m, f) => {
+        const dm = place[m] === p ? 0 : 1, df = place[f] === p ? 0 : 1;
+        return overSexLimits(ctx.rule, males + dm, females + df) <= overSexLimits(ctx.rule, males, females)
+            && (ctx.cap[p] == null || adults.length + dm + df <= ctx.cap[p]);
+    };
+    // never in beside a relative of the other sex: an adult staying there, one growing up soon, or a
+    // breeder there (one already living there moves in beside no one)
+    const kinThere = i => place[i] !== p && (ctx.kinWithStaying(i, p) + ctx.kinWithSoon(i, p) > 0
+        || ctx.all.some(k => k !== i && place[k] === p && ctx.compatible(i, k) && ctx.pvAny(i, k) < 0));
+    let best = null;
+    for (const m of ctx.maleSide) {
+        if (!canJoin(ctx, place, m, p) || kinThere(m)) continue;
+        for (const f of ctx.femaleSide) {
+            if (!ctx.compatible(m, f) || ctx.pvAny(m, f) <= 0 || !canJoin(ctx, place, f, p) || kinThere(f) || !fits(m, f)) continue;
+            const was = [place[m], place[f]];
+            place[m] = p;
+            place[f] = p;
+            if (others.every(q => hasPair(ctx, place, q))) {
+                const total = makeState(ctx, place).total;
+                if (!best || total > best.total) best = { m, f, total };
+            }
+            place[m] = was[0];
+            place[f] = was[1];
+        }
+    }
+    return best;
+}
+
+// Breeding habitats left without a partner after the plan: breeders of one
+// sex and none of the other (or, in a habitat the player assigned to the
+// species, none at all) where the game's limits leave room for one. The
+// plan used every animal in the zoo and at the trade centre, so what is
+// missing has to come from storage or the market; an empty habitat asks
+// only for the sex no group can spare. -> [{ hab, sex }] where sex is a Sex
+// value or 'pair'
+function partnerNeeds(ctx, place) {
+    const out = [];
+    if (ctx.B.some(a => a.sex === Sex.Unisex)) return out;
+    for (const p of ctx.groupPlaces) {
+        if (!ctx.allowedPlace[p]) continue;
+        // a breeder there leaves within a year, when a relative of the other sex grows up beside it: no need yet
+        if (ctx.all.some(i => place[i] === p && ctx.kinWithSoon(i, p) > 0)) continue;
+        const hab = ctx.placeKeys[p];
+        let bm = 0, bf = 0;
+        for (let i = 0; i < ctx.n; i++) {
+            if (place[i] !== p) continue;
+            if (ctx.sex[i] === Sex.Male) bm++;
+            else if (ctx.sex[i] === Sex.Female) bf++;
+        }
+        const adults = adultsAt(ctx, place, hab);
+        const m = adults.filter(a => a.sex === Sex.Male).length, f = adults.filter(a => a.sex === Sex.Female).length;
+        const fits = (dm, df) => overSexLimits(ctx.rule, m + dm, f + df) <= overSexLimits(ctx.rule, m, f);
+        const spare = sex => ctx.all.some(i => ctx.sex[i] === sex && canJoin(ctx, place, i, p));
+        if (bm && !bf && fits(0, 1)) out.push({ hab, sex: Sex.Female });
+        else if (bf && !bm && fits(1, 0)) out.push({ hab, sex: Sex.Male });
+        else if (!bm && !bf && !adults.length && ctx.assigned.has(hab)) out.push({ hab, sex: spare(Sex.Female) ? Sex.Male : spare(Sex.Male) ? Sex.Female : 'pair' });
+    }
+    return out;
+}
+
+// Gene score points under the best breeder of its sex that make an adult weak.
+export const SELL_MARGIN = 15;
+
+// Animals not worth breeding: the best young each could have (the game's
+// offspring prediction, with any unrelated breeder of the other sex) score
+// `margin` or more under the best pair of the species. The best `keep` of
+// each sex always stay (at least the last one), so no sex is left without a
+// breeder, nor a habitat set aside for the species without one. -> Set(id)
+export function weakBreeders(model, list, margin, keep = 1) {
+    const opposite = (x, y) => (isMaleSide(x.sex) && isFemaleSide(y.sex)) || (isFemaleSide(x.sex) && isMaleSide(y.sex));
+    const bestYoung = new Map();
+    const raise = (a, s) => {
+        if (!(bestYoung.get(a.id) >= s)) bestYoung.set(a.id, s);
+    };
+    // the prediction is the same either way round: each pair once
+    for (let ix = 0; ix < list.length; ix++) {
+        for (let iy = ix + 1; iy < list.length; iy++) {
+            const x = list[ix], y = list[iy];
+            if (!opposite(x, y) || kinPair(model, x, y)) continue;
+            const s = offspringScore(predictOffspring(x.genes, y.genes));
+            if (s == null) continue;
+            raise(x, s);
+            raise(y, s);
+        }
+    }
+    const top = Math.max(-1, ...bestYoung.values());
+    const weak = new Set();
+    for (const [id, s] of bestYoung) if (top - s >= margin) weak.add(id);
+    for (const side of [isMaleSide, isFemaleSide]) {
+        const ofSide = list.filter(a => side(a.sex) && bestYoung.has(a.id)).sort((a, b) => bestYoung.get(b.id) - bestYoung.get(a.id));
+        for (const a of ofSide.slice(0, Math.max(1, keep))) weak.delete(a.id);
+    }
+    return weak;
+}
+
+// Adults the zoo can do without: weak genes (SELL_MARGIN under the best
+// breeder of their sex, or a 0% fertility gene) and not needed to breed,
+// because the plan leaves them out of the breeding habitats or their
+// habitat keeps a better breeder of their sex. And every good breeder the
+// plan leaves out of the groups (a better one bought in its place) that
+// keepAdvice does not keep. Only animals the game will sell (fertile, not
+// elderly, not pregnant). endOf(a) -> where the plan leaves it.
+// -> [{ id, sex, score, best, reason: 'weak'|'nofert'|'below'|'replaced' (advicecore) }]
+function sellAdvice(ctx, all, endOf) {
+    const bestOf = bestScores(ctx);
+    const weak = weakOf(ctx, bestOf);
+    const breedingPlace = breedingPlaceOf(ctx);
+    const breeders = new Set(ctx.B);
+    const out = [];
+    for (const a of all) {
+        if (a.juv || a.exhibit || a.preg || a.infertile || a.moving || !canEverBreed(a) || isRetired(a) || !weak(a)) continue;
+        const hab = endOf(a);
+        const covered = !breedingPlace(hab)
+            || all.some(b => b !== a && b.sex === a.sex && breeders.has(b) && endOf(b) === hab && !weak(b));
+        if (covered) out.push({ id: a.id, sex: a.sex, score: ownGeneScore(a), best: bestOf.get(a.sex), reason: noFertility(a) ? 'nofert' : 'weak' });
+    }
+    const told = new Set(out.map(x => x.id));
+    for (const x of leftOut(ctx, endOf, bestOf)) {
+        if (told.has(x.a.id) || x.keep) continue;
+        out.push({ id: x.a.id, sex: x.a.sex, score: ownGeneScore(x.a), best: bestOf.get(x.a.sex), reason: x.below ? 'below' : 'replaced' });
+    }
+    return out.sort((x, y) => x.score - y.score);
+}
+
+// bestOf: the best own gene score per sex among the breeders
+function bestScores(ctx) {
+    const bestOf = new Map();
+    for (const a of ctx.B) {
+        const score = ownGeneScore(a);
+        if (score != null && score > (bestOf.get(a.sex) ?? -1)) bestOf.set(a.sex, score);
+    }
+    return bestOf;
+}
+
+function weakOf(ctx, bestOf) {
+    return a => noFertility(a) || (ownGeneScore(a) != null && bestOf.get(a.sex) != null && ctx.weak.has(a.id));
+}
+
+function breedingPlaceOf(ctx) {
+    return hab => ctx.placeOf.has(hab) && ctx.groupPlace[ctx.placeOf.get(hab)] && ctx.allowedPlace[ctx.placeOf.get(hab)];
+}
+
+// An animal's average young with the breeders of the other sex in the
+// groups (null: none to judge by).
+function averageYoung(a, mates) {
+    const each = mates.filter(b => (isMaleSide(a.sex) && isFemaleSide(b.sex)) || (isFemaleSide(a.sex) && isMaleSide(b.sex)))
+        .map(b => offspringScore(predictOffspring(a.genes, b.genes))).filter(v => v != null);
+    return each.length ? each.reduce((t, v) => t + v, 0) / each.length : null;
+}
+
+// Good breeders at the trade centre the plan leaves there (one it sends
+// there is judged on the run after it arrives: a move can be held back).
+// One whose young with the groups' breeders fall below every one of its
+// sex breeding there would bring the standard down: sold, later use or
+// not. Else kept for later when young of yours of the other sex, no kin
+// of it, grow up while it still breeds (the trade centre keeps it from
+// ageing); and the last good one of its sex outside the groups is kept.
+// -> [{ a, keep, young, last, below }]
+function leftOut(ctx, endOf, bestOf) {
+    const weak = weakOf(ctx, bestOf);
+    const breedingPlace = breedingPlaceOf(ctx);
+    const inGroups = ctx.B.filter(b => breedingPlace(endOf(b)));
+    const out = [];
+    ctx.B.forEach((a, i) => {
+        if (ctx.placeKeys[ctx.home[i]] !== TRADE || endOf(a) !== TRADE) return;
+        if (weak(a) || a.preg || a.moving || (a.fert && a.fert.elderly) || isRetired(a)) return;
+        const young = ctx.futureMateCount[i];
+        const peers = inGroups.filter(b => b.sex === a.sex && !weak(b));
+        const last = !peers.length;
+        const own = averageYoung(a, inGroups);
+        const theirs = peers.map(b => averageYoung(b, inGroups)).filter(v => v != null);
+        const below = own != null && theirs.length > 0 && own < Math.min(...theirs);
+        out.push({ a, keep: last || (young > 0 && !below), young, last, below });
+    });
+    return out;
+}
+
+// The good breeders to keep at the trade centre for later (leftOut).
+// -> [{ id, sex, score, young, reason: 'young'|'last' (advicecore) }]
+function keepAdvice(ctx, endOf) {
+    return leftOut(ctx, endOf, bestScores(ctx)).filter(x => x.keep).map(({ a, young, last }) => ({
+        id: a.id, sex: a.sex, score: ownGeneScore(a), young, reason: young ? 'young' : 'last',
+    }));
+}
+
+const LEAVE_REASONS = {
+    kin: 'related to an adult of the other sex there',
+    soon: 'related to a youngster of the other sex there that grows up soon',
+    limit: "over the game's most of its sex in one habitat",
+    room: "over the habitat's room",
+    never: 'can no longer breed',
+    weak: "its young would score well below your best pair's",
+    nofert: '0% fertility genes',
+    makeup: 'over the group make-up (not breeding)',
+    alone: 'no partner of the other sex here to breed with',
+};
 
 // ---------------------------------------------------------------- planner
 
@@ -1730,27 +2225,35 @@ function keepSpares(ctx, place) {
 function prepare(model, species, info, destinations, assignments, options) {
     const opts = Object.assign({}, PROGRAMME_DEFAULTS, options);
     if (!model || !species) return null;
-    info = info || {};
+    // the game's rules for the species (groupRule) whether or not the game's species info arrived
+    info = Object.assign({}, info || {}, { species });
     // the species' fertility ages from the kin snapshot when the game was not asked
     const facts = model.speciesFacts && model.speciesFacts[species];
     if (!info.fertilityAges && facts && facts.maturity != null) info = Object.assign({}, info, { fertilityAges: { maturity: facts.maturity, infertility: facts.infertility } });
     const all = Array.from(model.animals.values()).filter(a => a.species === species && !a.exhibit && a.alive !== false);
     const canMoveA = a => !a.moving && (a.lt === 'habitat' || a.lt === 'trade' || (!a.lt && !!a.hab));
     const inTrade = a => a.lt === 'trade' && !a.hab;
-    // an animal away for a while (vet, quarantine, transit) breeds in its
-    // assigned habitat: a breeder there, pinned (it can't be moved now)
-    const breeders = all.filter(a => isBreeder(a, info) && (canMoveA(a) || (a.away && a.hab)) && (opts.useTradeCentre || !inTrade(a)));
-    const tradeWaiting = all.filter(a => inTrade(a) && isBreeder(a, info) && canMoveA(a)).length;
-    const home = new Map(all.map(a => [a.id, a.hab || (a.lt === 'trade' ? TRADE : AWAY)]));
-    // non-breeding adults that may leave if the make-up has no place for them
     const pinSet = new Set(Array.isArray(opts.pinIds) ? opts.pinIds.map(String) : opts.pinIds instanceof Set ? Array.from(opts.pinIds, String) : []);
-    const ruleNow = groupRule(info, opts.ratio);
-    const spares = opts.spareOut === false || !ruleNow || ruleNow.m == null ? [] : all.filter(a => a.hab && !a.juv && !breeders.includes(a)
-        && canMoveA(a) && a.lt !== 'trade' && !a.preg && !a.away && !pinSet.has(String(a.id))
-        && (a.sex === Sex.Male || a.sex === Sex.Female));
-    // where the species may live
+    // an animal away for a while (vet, quarantine, transit) breeds in its
+    // assigned habitat: a breeder there, pinned (it can't be moved now); one
+    // held at the trade centre (sent there to leave, hands off) never breeds
+    // here, so it neither breeds nor sets the standard the others are held to
+    const able = all.filter(a => isBreeder(a) && (canMoveA(a) || (a.away && a.hab)) && (opts.useTradeCentre || !inTrade(a)) && !(inTrade(a) && pinSet.has(String(a.id))));
     const assign = normalizeAssignments(assignments);
     const mine = assignedHabitatsOf(assign, species);
+    // the best possible young for each calf: animals whose young would fall well
+    // behind do not breed, unless a habitat set aside for the species needs them
+    const weak = weakBreeders(model, able.filter(a => !noFertility(a)), opts.youngMargin, mine.length);
+    for (const a of able) if (noFertility(a)) weak.add(a.id);
+    const breeders = able.filter(a => !weak.has(a.id));
+    const tradeWaiting = all.filter(a => inTrade(a) && isBreeder(a) && canMoveA(a)).length;
+    const home = new Map(all.map(a => [a.id, a.hab || (a.lt === 'trade' ? TRADE : AWAY)]));
+    // non-breeding adults that may leave (keepSpares); elderly ones past breeding stay where they
+    // are: the game won't rehome them, so a move would only strand them in storage
+    const spares = all.filter(a => a.hab && !a.juv && !breeders.includes(a)
+        && canMoveA(a) && a.lt !== 'trade' && !a.preg && !a.away && !pinSet.has(String(a.id)) && !isRetired(a)
+        && (a.sex === Sex.Male || a.sex === Sex.Female));
+    // where the species may live
     const ok = destinations && destinations.bySpecies && destinations.bySpecies[species];
     let habitats;
     if (mine.length) habitats = mine.filter(h => !ok || !ok[h] || ok[h].ok);
@@ -1765,7 +2268,11 @@ function prepare(model, species, info, destinations, assignments, options) {
     habitats = Array.from(allowed);
     const infoX = Object.assign({}, info);
     if (!infoX.spacePerAdult) infoX.spacePerAdult = estimateSpacePerAdult(info, youngByHabitat(all));
-    const ctx = makeContext(model, infoX, opts, breeders, all, habitats, home, spares.filter(a => habitats.includes(a.hab)));
+    // non-breeders elsewhere are not the programme's, unless one lives beside a relative of the other sex: never inbreed
+    const besideKin = a => all.some(b => b !== a && !b.juv && b.hab === a.hab && kinPair(model, a, b));
+    const ctx = makeContext(model, infoX, opts, breeders, all, habitats, home, spares.filter(a => habitats.includes(a.hab) || besideKin(a)));
+    ctx.assigned = new Set(mine.map(String));
+    ctx.weak = weak;
     // the deep engine has its own budgets (solveDeep)
     ctx.budget = makeBudget(opts);
     ctx.seedKey = `${species}|${breeders.map(a => a.id).join(',')}|${opts.seed}`;
@@ -1773,13 +2280,19 @@ function prepare(model, species, info, destinations, assignments, options) {
     return { ctx, opts, breeders, habitats, tradeWaiting, all };
 }
 
-// A kept plan (a deep search) with the young moves of the fresh plan:
-// young that arrived at the trade centre since are taken home too.
+// A move that takes a young or pregnant animal out of the trade centre (mustHouse).
+export function isHousingMove(m) {
+    return !!(m && (m.young || m.pregnant || m.retiring));
+}
+
+// A kept plan (a deep search) with the housing moves of the fresh plan:
+// young and pregnant animals that arrived at the trade centre since go into
+// a habitat too.
 export function withFreshYoung(r, fresh) {
     if (!r || !fresh || r === fresh) return r;
-    const young = (fresh.moves || []).filter(m => m.young);
+    const young = (fresh.moves || []).filter(isHousingMove);
     const ids = new Set(young.map(m => String(m.id)));
-    const keep = (r.moves || []).filter(m => !m.young && !ids.has(String(m.id)));
+    const keep = (r.moves || []).filter(m => !isHousingMove(m) && !ids.has(String(m.id)));
     return Object.assign({}, r, { moves: keep.concat(young) });
 }
 
@@ -1792,31 +2305,73 @@ export function youngByHabitat(all) {
 
 // Young waiting at the trade centre back to a habitat: the mother's (where
 // the plan puts her), else the father's, else the allowed habitat with the
-// most room for adults. endOf(animal) -> its habitat after the plan.
+// most room for adults, one without an adult relative of the other sex if
+// there is one. endOf(animal) -> its habitat after the plan.
 export function youngBackMoves(model, all, habitats, endOf, roomOf = () => 0) {
     const allowed = new Set((habitats || []).map(String));
     if (!allowed.size) return [];
-    const byGuid = new Map();
-    for (const a of model && model.animals ? model.animals.values() : []) if (a.guid) byGuid.set(String(a.guid), a);
     const parentHab = (a, sex) => {
         for (const g of a.par || []) {
-            const p = byGuid.get(String(g));
+            const p = model.byGuid.get(String(g));
             if (!p || p.sex !== sex) continue;
             const h = endOf(p);
             if (h && allowed.has(String(h))) return String(h);
         }
         return null;
     };
-    const roomiest = Array.from(allowed).sort((x, y) => roomOf(y) - roomOf(x) || (x < y ? -1 : 1))[0];
+    const byRoom = Array.from(allowed).sort((x, y) => roomOf(y) - roomOf(x) || (x < y ? -1 : 1));
+    const kinThere = (a, hab) => (all || []).some(b => !b.juv && String(endOf(b)) === hab && kinPair(model, a, b));
     const out = [];
     for (const a of all || []) {
-        if (!a || !a.juv || a.moving || a.lt !== 'trade') continue;
+        if (!mustHouse(a) || !a.juv) continue;
         const mum = parentHab(a, Sex.Female);
         const dad = mum ? null : parentHab(a, Sex.Male);
         // its own habitat (it waits there with one assigned), else the roomiest
         const own = a.hab && allowed.has(String(a.hab)) ? String(a.hab) : null;
-        const to = mum || dad || own || roomiest;
+        const to = mum || dad || own || byRoom.find(hab => !kinThere(a, hab)) || byRoom[0];
         out.push({ id: a.id, to, fromTrade: true, young: true, reason: mum ? "young: back to its mother's habitat" : dad ? "young: back to its father's habitat" : own ? 'young: back to its habitat' : 'young: back to a habitat' });
+    }
+    return out;
+}
+
+// Adults waiting at the trade centre into a habitat (mustHouse): a pregnant
+// female gives birth there, and only then can she be sold; one past selling
+// lives out its life there. Never beside a relative of the other sex, adult
+// or young (never inbreed), nor over the game's most per sex; of the rest
+// the ones with room first, then the best young with the breeders of the
+// other sex there, then the most room. One with no such habitat waits.
+// endOf(animal) -> its habitat after the plan; roomOf(habitat) -> adults it
+// can still take.
+export function adultBackMoves(model, all, habitats, endOf, roomOf, rule) {
+    // habitat|sex -> adults housed there by this call
+    const added = new Map();
+    const addedOf = (hab, sex) => added.get(`${hab}|${sex}`) || 0;
+    const out = [];
+    for (const a of all || []) {
+        if (!mustHouse(a) || a.juv) continue;
+        const plus = sex => (a.sex === sex ? 1 : 0);
+        let best = null;
+        for (const hab of (habitats || []).map(String)) {
+            const there = all.filter(b => b !== a && String(endOf(b)) === hab);
+            if (there.some(b => b.sex !== a.sex && kinPair(model, a, b))) continue;
+            const adults = there.filter(b => !b.juv);
+            // the limits count who lives there now as well: the plan is solved
+            // again with this one housed, and may keep a resident it moved out
+            const counted = all.filter(b => b !== a && !b.juv && (String(endOf(b)) === hab || String(b.hab) === hab));
+            const males = counted.filter(b => b.sex === Sex.Male).length + addedOf(hab, Sex.Male);
+            const females = counted.filter(b => b.sex === Sex.Female).length + addedOf(hab, Sex.Female);
+            // only its own sex counts: a habitat already over on the other sex takes it all the same
+            if (overSexLimits(rule, males + plus(Sex.Male), females + plus(Sex.Female)) > overSexLimits(rule, males, females)) continue;
+            const room = roomOf(hab) - addedOf(hab, Sex.Male) - addedOf(hab, Sex.Female);
+            const young = bestOffspringScore(a.genes, adults.filter(b => b.sex !== a.sex && isBreeder(b)).map(b => b.genes)) ?? -1;
+            const c = { hab, fits: room > 0, young, room };
+            if (!best || c.fits > best.fits || (c.fits === best.fits && (c.young > best.young || (c.young === best.young && c.room > best.room)))) best = c;
+        }
+        if (!best) continue;
+        added.set(`${best.hab}|${a.sex}`, addedOf(best.hab, a.sex) + 1);
+        out.push(a.preg
+            ? { id: a.id, to: best.hab, fromTrade: true, pregnant: true, reason: 'pregnant: into a habitat to give birth' }
+            : { id: a.id, to: best.hab, fromTrade: true, retiring: true, reason: 'past selling: into a habitat to live out its life' });
     }
     return out;
 }
@@ -1838,73 +2393,93 @@ export function scoreLayout(model, species, info = {}, destinations = null, { as
     return makeState(ctx, place).total;
 }
 
+// A pregnant or past-selling adult waiting at the trade centre goes into a habitat first
+// (adultBackMoves); the layout is then solved again with it there, so
+// the groups are built around it rather than undone on the next run.
 function* programmeSteps(model, species, info, destinations, assignments, options) {
+    const first = yield* layoutSteps(model, species, info, destinations, assignments, options);
+    const housing = first ? first.moves.filter(m => m.pregnant || m.retiring) : [];
+    if (!housing.length) return first;
+    const r = yield* layoutSteps(simulatePlan(model, housing, destinations), species, info, destinations, assignments, options);
+    return Object.assign({}, r, { moves: housing.concat(r.moves), fromTrade: r.fromTrade + housing.length, startScore: first.startScore, before: first.before });
+}
+
+function* layoutSteps(model, species, info, destinations, assignments, options) {
     const prep = prepare(model, species, info, destinations, assignments, options);
     if (!prep) return null;
     const { ctx, opts, breeders, habitats, tradeWaiting, all } = prep;
     const start = Int32Array.from(ctx.home);
     const deep = opts.engine === 'deep';
-    const solved = breeders.length ? yield* (deep ? solveDeep(ctx) : solveLayout(ctx)) : { place: start, exact: true };
+    let solved = breeders.length ? yield* (deep ? solveDeep(ctx) : solveLayout(ctx)) : { place: start, exact: true };
+    const keep = lastBreederSent(ctx, solved.place);
+    if (keep >= 0) {
+        ctx.pinned[keep] = 1;
+        ctx.targetsOf[keep] = [ctx.home[keep]];
+        solved = yield* (deep ? solveDeep(ctx) : solveLayout(ctx));
+    }
     const place = prune(ctx, solved.place);
-    // the non-breeders the make-up keeps; the rest leave
-    const { kept, leave } = keepSpares(ctx, place);
-    // the reported numbers scored afresh (the cache's keys are hashes):
-    // before, every non-breeder in its habitat; after, the ones kept
-    const baseFixed = ctx.fixed.slice();
-    const withSpares = list => {
-        const f = baseFixed.slice();
-        for (const a of list) if (ctx.placeOf.has(a.hab)) f[ctx.placeOf.get(a.hab)]++;
-        return f;
-    };
-    ctx.memo.clear();
-    ctx.fixed = withSpares(ctx.spares);
+    const paired = opts.pairEvery !== false ? pairEveryHabitat(ctx, place) : new Set();
+    // the non-breeders that stay; the rest leave, to another habitat where they fit if one does
+    const { kept: keptHome, leave } = keepSpares(ctx, place);
+    const rehomed = rehomeSpares(ctx, place, keptHome, leave);
+    const kept = keptHome.concat(rehomed.filter(r => r.to !== TRADE).map(r => Object.assign({}, r.a, { hab: r.to })));
+    // the reported numbers scored afresh: before, every non-breeder in its
+    // habitat; after, the ones kept
+    withStaying(ctx, ctx.spares);
     const startState = makeState(ctx, start);
-    ctx.memo.clear();
-    ctx.fixed = withSpares(kept);
-    for (const a of kept) ctx.fixedAdults.set(a.hab, (ctx.fixedAdults.get(a.hab) || 0) + 1);
+    withStaying(ctx, kept);
     const finalState = makeState(ctx, Int32Array.from(place));
+    // where each animal of the species ends: a habitat, TRADE or AWAY
+    const index = new Map(breeders.map((a, i) => [a.id, i]));
+    const spareTo = new Map(rehomed.map(r => [r.a.id, r.to]));
+    const endPlace = a => (index.has(a.id) ? ctx.placeKeys[place[index.get(a.id)]] : spareTo.has(a.id) ? spareTo.get(a.id) : a.hab || (a.lt === 'trade' ? TRADE : AWAY));
     // the plan: every breeder that ends up somewhere else
     const moves = [];
     breeders.forEach((a, i) => {
         if (place[i] === ctx.home[i]) return;
         const to = ctx.placeKeys[place[i]];
         const fromTrade = ctx.home[i] === ctx.trade;
-        moves.push({ id: a.id, to, fromTrade, reason: to === TRADE ? 'no place in a breeding group' : fromTrade ? 'from the trade centre into a breeding group' : 'breeding programme' });
+        const why = paired.has(i) ? 'a breeding pair for every habitat' : to === TRADE ? 'no place in a breeding group' : fromTrade ? 'from the trade centre into a breeding group' : 'breeding programme';
+        moves.push({ id: a.id, to, fromTrade, reason: why });
     });
-    for (const a of leave) {
-        moves.push({ id: a.id, to: TRADE, fromTrade: false, spare: true, reason: a.contra ? 'over the group make-up (on contraception)' : 'over the group make-up (not breeding)' });
+    for (const { a, why, to } of rehomed) {
+        if (to === a.hab) continue;
+        moves.push({ id: a.id, to, fromTrade: false, spare: true, reason: LEAVE_REASONS[why] + (a.contra ? ' (on contraception)' : '') });
     }
-    // youth is left alone: never a juvenile to the trade centre (whatever the
-    // model passed in calls an adult), and the young waiting there go home
-    for (let k = moves.length - 1; k >= 0; k--) {
-        const a = model.animals.get(String(moves[k].id));
-        if (a && a.juv && moves[k].to === TRADE) moves.splice(k, 1);
+    // pregnant females waiting at the trade centre into a habitat, then the
+    // young waiting there go home (to her too: she comes first)
+    const housed = new Map();
+    const endOf = a => {
+        const k = housed.get(a.id) || endPlace(a);
+        return k === TRADE || k === AWAY ? null : k;
+    };
+    const roomOf = hab => {
+        const p = ctx.placeOf.get(hab);
+        const cap = ctx.capacity.get(hab);
+        if (p == null || cap == null) return 0;
+        let n = ctx.fixedAdults.get(hab) || 0;
+        for (let i = 0; i < ctx.n; i++) if (place[i] === p) n++;
+        return cap - n;
+    };
+    if (opts.houseBack !== false) {
+        for (const m of adultBackMoves(model, all, habitats, endOf, roomOf, ctx.rule)) {
+            housed.set(m.id, m.to);
+            moves.push(m);
+        }
     }
-    if (opts.youngBack !== false) {
-        const index = new Map(breeders.map((a, i) => [a.id, i]));
-        const endOf = a => {
-            const i = index.get(a.id);
-            const k = i == null ? a.hab : ctx.placeKeys[place[i]];
-            return k === TRADE || k === AWAY ? null : k;
-        };
-        const roomOf = hab => {
-            const p = ctx.placeOf.get(hab);
-            const cap = ctx.capacity.get(hab);
-            if (p == null || cap == null) return 0;
-            let n = ctx.fixedAdults.get(hab) || 0;
-            for (let i = 0; i < ctx.n; i++) if (place[i] === p) n++;
-            return cap - n;
-        };
-        moves.push(...youngBackMoves(model, all, habitats, endOf, roomOf));
-    }
+    if (opts.youngBack !== false) moves.push(...youngBackMoves(model, all, habitats, endOf, roomOf));
     return {
         system: ctx.rule.system,
         rule: ctx.rule,
         moves,
         // pregnant breeders: they stay where they are (never in moves)
         pinned: breeders.filter((a, i) => ctx.pinned[i]).map(a => a.id),
+        retiredBlockers: retiredBlockers(ctx, place),
+        needs: partnerNeeds(ctx, place),
+        sellable: sellAdvice(ctx, all, endPlace),
+        keep: keepAdvice(ctx, endPlace),
         // pregnant females who should get contraception, and why
-        contraception: contraceptionAdvice(model, species, { moves, info: ctx.info, rule: ctx.rule }),
+        contraception: contraceptionAdvice(model, species, { moves, rule: ctx.rule }),
         // breeders taken out of the trade centre / waiting there (and usable)
         fromTrade: moves.filter(m => m.fromTrade).length,
         tradeWaiting,
@@ -1959,14 +2534,15 @@ export function programmeProblemSig(model, species, info = {}, destinations = nu
     // arrived must not be reused (2026-10-19: young from Bring all stayed
     // in the trade centre)
     const opts = Object.assign({}, PROGRAMME_DEFAULTS, options);
-    const young = opts.youngBack === false ? [] : (prep.all || []).filter(a => a.juv && a.lt === 'trade' && !a.moving).map(a => a.id).sort();
-    return `${problemSig(prep.ctx)}#young:${young.join(',')}`;
+    const waiting = (prep.all || []).filter(a => mustHouse(a) && (a.juv ? opts.youngBack !== false : opts.houseBack !== false)).map(a => a.id).sort();
+    return `${problemSig(prep.ctx)}#young:${waiting.join(',')}`;
 }
 
 // The breeders (where they are, pinned, mates), the adults that only count
-// towards room, each place's room, the make-up and the facts the pair
-// values use; not the juveniles or the game's raw habitat data, so a birth
-// or a habitat that finishes measuring with the same room changes nothing.
+// towards room, each place's room, the make-up, the facts the pair values
+// use and the juveniles growing up soon (kin like adults); not the other
+// juveniles or the game's raw habitat data, so a birth or a habitat that
+// finishes measuring with the same room changes nothing.
 function problemSig(ctx) {
     const rows = ctx.B.map((a, i) => [a.id, ctx.placeKeys[ctx.home[i]], a.sex, ctx.pinned && ctx.pinned[i] ? 1 : 0,
         (a.mates || []).slice().sort().join('+'), (a.bond && a.bond.mate) || '', (a.fert && a.fert.state) || '',
@@ -1976,7 +2552,8 @@ function problemSig(ctx) {
     const r = ctx.rule;
     const facts = [ratioKey(r), r.maxMales, r.maxFemales, r.system, JSON.stringify(ctx.info.fertilityAges || null), JSON.stringify(ctx.info.conception || null)].join('|');
     const spares = (ctx.spares || []).map(a => `${a.id}@${a.hab}:${a.sex}:${a.contra ? 1 : 0}`).sort();
-    return `${rows.join(';')}#${places.join(';')}#${facts}#${spares.join(';')}`;
+    const soon = Array.from(ctx.soonAt, ([hab, list]) => list.map(a => `${a.id}@${hab}`)).flat().sort();
+    return `${rows.join(';')}#${places.join(';')}#${facts}#${spares.join(';')}#${soon.join(';')}`;
 }
 
 // The same, in slices of about sliceMs with restMs between them (CPU use),
@@ -2130,9 +2707,9 @@ function medianOf(list) {
 
 // -> [{ id, name, hab, kind: 'nomate'|'related'|'genes'|'surplus', reason,
 //       text ("Contraception after birth: ..."), score, median }]
-// options: moves (the plan, [{ id, to }]), info (isBreeder), rule
-// (groupRule; null: mixed), limits (CONTRA_ADVICE overrides).
-export function contraceptionAdvice(model, species, { moves = [], info = {}, rule = null, limits = null } = {}) {
+// options: moves (the plan, [{ id, to }]), rule (groupRule; null:
+// mixed), limits (CONTRA_ADVICE overrides).
+export function contraceptionAdvice(model, species, { moves = [], rule = null, limits = null } = {}) {
     if (!model || !model.animals || !species) return [];
     const L = Object.assign({}, CONTRA_ADVICE, limits || {});
     const all = Array.from(model.animals.values()).filter(a => a.species === species && !a.exhibit && a.alive !== false);
@@ -2174,7 +2751,7 @@ export function contraceptionAdvice(model, species, { moves = [], info = {}, rul
         // the genes: against the other breeding females there after the plan
         const score = ownGeneScore(f);
         if (score == null) continue;
-        const peers = all.filter(b => b.id !== f.id && b.sex === Sex.Female && after(b) === hab && !b.contra && (b.preg || isBreeder(b, info)));
+        const peers = all.filter(b => b.id !== f.id && b.sex === Sex.Female && after(b) === hab && !b.contra && (b.preg || isBreeder(b)));
         const known = peers.map(ownGeneScore).filter(v => v != null);
         const median = medianOf(known);
         const weakest = known.length > 0 && known.every(v => score <= v);
@@ -2182,7 +2759,7 @@ export function contraceptionAdvice(model, species, { moves = [], info = {}, rul
             add('genes', `${weakest ? 'weakest genes in the group' : 'genes well below the group'} (${score} vs median ${median})`, { score, median });
             continue;
         }
-        const males = all.filter(b => b.sex === Sex.Male && after(b) === hab && !b.contra && fertileNow(b)).length;
+        const males = all.filter(b => b.sex === Sex.Male && after(b) === hab && canBreedNow(b)).length;
         const females = peers.length + 1;
         if (males > 0 && per.male !== Infinity && females > males * per.male && weakest) {
             add('surplus', `weakest genes of ${females} females for ${males} male${males === 1 ? '' : 's'} (${score} vs median ${median})`, { score, median });

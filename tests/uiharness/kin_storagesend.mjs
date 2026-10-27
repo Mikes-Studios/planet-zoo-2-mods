@@ -7,7 +7,7 @@
 //  answers PZ2QoL_SendFacts / PZ2QoL_SendMove. Checks one move at a time,
 //  each after the previous one was confirmed and a pause, the best habitat
 //  (parent's, then the species'), skips (no habitat, refused) with the run
-//  carrying on, the summary, Stop, and the Franchise block.
+//  carrying on, the summary, Stop, and Franchise (the click is the go-ahead).
 
 const STORAGE = ['hubAnimalsData', 'animalStorageData'];
 
@@ -183,7 +183,7 @@ export async function hud(page, ctx) {
     await installFakeLua(page, 'offline');
 
     // 1. a full run
-    await page.evaluate(() => engine.trigger('PZ2QoL_SendArrived', 1, '101,102,103,104,105', false));
+    await page.evaluate(() => engine.trigger('PZ2QoL_SendArrived', 1, '101,102,103,104,105', 'habitat'));
     await page.waitForTimeout(1500);
     facts.midRun = await cardText(page);
     await ctx.shot(page, 'ss_4_park_running');
@@ -212,7 +212,7 @@ export async function hud(page, ctx) {
 
     // 2. Stop: ends before the next animal
     await page.evaluate(() => { window.__ssFake.moves = []; window.__ssFake.moving = {}; });
-    await page.evaluate(() => engine.trigger('PZ2QoL_SendArrived', 2, '101,102,105', false));
+    await page.evaluate(() => engine.trigger('PZ2QoL_SendArrived', 2, '101,102,105', 'habitat'));
     await page.waitForFunction(() => window.__ssFake.moves.length >= 1, null, { timeout: 10000 });
     await page.locator('.PZ2QoL_ssCard .PZ2QoL_ssCardBtn', { hasText: 'Stop' }).click();
     await page.waitForFunction(() => /Close/.test(document.querySelector('.PZ2QoL_ssCard')?.innerText || ''), null, { timeout: 20000 });
@@ -222,13 +222,13 @@ export async function hud(page, ctx) {
     if (!/not tried \(stopped\)/.test(facts.stopped.text || '')) problems.push('Stop summary: ' + facts.stopped.text);
     await page.locator('.PZ2QoL_ssCard .PZ2QoL_ssCardBtn', { hasText: 'Close' }).click();
 
-    // 3. Franchise without consent: nothing is moved
+    // 3. Franchise: the player's click is the go-ahead, the animal is placed
     await page.evaluate(() => { window.__ssFake.moves = []; window.__ssFake.moving = {}; window.__ssFake.mode = 'franchise'; });
-    await page.evaluate(() => engine.trigger('PZ2QoL_SendArrived', 3, '101', false));
-    await page.waitForTimeout(800);
+    await page.evaluate(() => engine.trigger('PZ2QoL_SendArrived', 3, '101', 'habitat'));
+    await page.waitForFunction(() => window.__ssFake.moves.length >= 1, null, { timeout: 10000 }).catch(() => {});
     facts.franchise = { text: await cardText(page), moves: await page.evaluate(() => window.__ssFake.moves.length) };
-    await ctx.shot(page, 'ss_7_park_franchise_block');
-    if (facts.franchise.moves !== 0 || !/Franchise/.test(facts.franchise.text || '')) problems.push('Franchise block: ' + JSON.stringify(facts.franchise));
+    await ctx.shot(page, 'ss_7_park_franchise');
+    if (facts.franchise.moves !== 1) problems.push('Franchise: ' + JSON.stringify(facts.franchise));
     await page.locator('.PZ2QoL_ssCard .PZ2QoL_ssCardBtn', { hasText: 'Close' }).click().catch(() => {});
     await page.evaluate(async () => {
         window.__ssFake.mode = 'offline';

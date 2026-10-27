@@ -29,6 +29,7 @@
 .PZ2QoL_kinLine, .PZ2QoL_kinLine *,
 .PZ2QoL_kinPanel, .PZ2QoL_kinPanel *,
 .PZ2QoL_kinToast, .PZ2QoL_kinToast *,
+.PZ2QoL_missed, .PZ2QoL_missed *,
 .PZ2QoL_kinHost, .PZ2QoL_kinHost * {
   display: flex;
   flex-direction: row;
@@ -275,7 +276,8 @@
 
 /* ---------------------------------------------------------- info panels */
 
-.PZ2QoL_kinLine.habitatPanel { margin-left: 0.6rem; }
+/* a row of its own under the game's counters (kinhabitat speciesLine) */
+.PZ2QoL_kinLine.habitatPanel { align-self: flex-start; margin-top: 0.4rem; }
 .PZ2QoL_kinLine.overview { align-self: flex-start; margin-top: 0.5rem; }
 
 /* ---------------------------------------------------------------- toasts */
@@ -326,8 +328,6 @@
   width: 1.4rem;
   height: 1.4rem;
   border-radius: 0.7rem;
-  font-size: 0.8rem;
-  color: var(--qol-ink-soft);
   cursor: pointer;
 }
 .PZ2QoL_kinToastClose:hover { background-color: var(--qol-chip); }
@@ -349,4 +349,65 @@
   background-color: var(--qol-chip);
   color: var(--qol-ink-soft);
 }
-.PZ2QoL_kinToast.lvl_action .PZ2QoL_kinToastKicker { background-color: var(--kin-risk); color: #FFFFFF; }
+.PZ2QoL_kinToast.lvl_action .PZ2QoL_kinToastKicker,
+.PZ2QoL_missedItem.lvl_action .PZ2QoL_kinToastKicker { background-color: var(--kin-risk); color: #FFFFFF; }
+
+/* missed notices (missednotices.js): a round button bottom right, its list above it */
+.PZ2QoL_missed {
+  position: fixed;
+  z-index: 56;
+  right: 1.2rem;
+  bottom: 1.2rem;
+  flex-direction: column;
+  align-items: flex-end;
+}
+.PZ2QoL_missed.empty { display: none; }
+.PZ2QoL_missedButton {
+  position: relative;
+  width: 3.2rem;
+  height: 3.2rem;
+  border-radius: 1.6rem;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--kin-risk);
+  box-shadow: var(--qol-shadow);
+  cursor: pointer;
+}
+.PZ2QoL_missedButton:hover { opacity: 0.9; }
+.PZ2QoL_missedCount {
+  position: absolute;
+  top: -0.3rem;
+  right: -0.3rem;
+  min-width: 1.4rem;
+  height: 1.4rem;
+  padding: 0 0.3rem;
+  border-radius: 0.7rem;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--qol-card);
+  border: 0.08rem solid var(--kin-risk);
+  color: var(--qol-ink);
+  font-size: 0.75rem;
+  font-weight: bold;
+}
+.PZ2QoL_missedPanel {
+  display: none;
+  flex-direction: column;
+  width: 32rem;
+  max-height: 70vh;
+  margin-bottom: 0.6rem;
+  border-radius: var(--qol-radius);
+  background-color: var(--qol-card);
+  border: 0.08rem solid var(--qol-line);
+  box-shadow: var(--qol-shadow);
+  color: var(--qol-ink);
+}
+.PZ2QoL_missed.open .PZ2QoL_missedPanel { display: flex; }
+.PZ2QoL_missedHead { flex-direction: row; align-items: center; padding: 0.6rem 0.8rem; border-bottom: 0.08rem solid var(--qol-line); }
+.PZ2QoL_missedTitle { font-size: 1rem; font-weight: bold; }
+.PZ2QoL_missedHead .PZ2QoL_kinAction { margin-right: 0.5rem; }
+.PZ2QoL_missedList { flex-direction: column; overflow-y: auto; padding: 0.4rem 0.8rem 0.8rem 0.8rem; }
+.PZ2QoL_missedItem { flex-direction: column; padding: 0.5rem 0; border-bottom: 0.08rem solid var(--qol-line); }
+.PZ2QoL_missedItem:last-child { border-bottom: none; }
+.PZ2QoL_missedItemHead { flex-direction: row; align-items: center; }
+.PZ2QoL_missedTime { margin-left: 0.5rem; font-size: 0.72rem; color: var(--qol-ink-faint); }

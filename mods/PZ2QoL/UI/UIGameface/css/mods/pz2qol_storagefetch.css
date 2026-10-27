@@ -19,7 +19,7 @@
   min-height: 1.6rem;
   padding: 0.15rem 0.6rem;
   border-radius: 0.8rem;
-  background-color: #596943;
+  background-color: var(--qol-olive);
   color: #FFFFFF;
   font-size: 0.72rem;
   font-weight: bold;
@@ -30,7 +30,7 @@
 .PZ2QoL_kbFetchBtn:hover { background-color: #6B7D52; }
 .PZ2QoL_kbFetchBtn:active { transform: translateY(0.05rem); }
 .PZ2QoL_kbFetchBtn.disabled { opacity: 0.45; cursor: default; }
-.PZ2QoL_kbFetchBtn.disabled:hover { background-color: #596943; }
+.PZ2QoL_kbFetchBtn.disabled:hover { background-color: var(--qol-olive); }
 .PZ2QoL_kbFetchBtn.disabled:active { transform: none; }
 .PZ2QoL_kbFetchBtn .PZ2QoL_icon { flex-shrink: 0; margin-right: 0.35rem; }
 .PZ2QoL_kbFetchBtn span { flex-shrink: 1; min-width: 0; }
@@ -41,13 +41,13 @@
   font-size: 0.64rem;
   line-height: 0.85rem;
   white-space: normal;
-  color: rgba(114, 91, 74, 0.72);
+  color: var(--qol-ink-soft);
 }
-.PZ2QoL_kbFetchNote.warn { color: #BF5A50; }
+.PZ2QoL_kbFetchNote.warn { color: var(--qol-poor); }
 /* "Bring all" sits right under the species button: no second rule, and an
    outlined button so the species one stays the main action */
 .PZ2QoL_kb .PZ2QoL_kbFetch.all { margin-top: 0.3rem; padding-top: 0; border-top-width: 0; }
-.PZ2QoL_kb .PZ2QoL_kbFetchBtn.all { background-color: rgba(89, 105, 67, 0.12); color: #596943; border: 0.08rem solid #596943; }
+.PZ2QoL_kb .PZ2QoL_kbFetchBtn.all { background-color: rgba(89, 105, 67, 0.12); color: var(--qol-olive); border: 0.08rem solid var(--qol-olive); }
 .PZ2QoL_kbFetchBtn.all:hover { background-color: rgba(89, 105, 67, 0.22); }
 .PZ2QoL_kbFetchBtn.all.disabled:hover { background-color: rgba(89, 105, 67, 0.12); }
 
@@ -81,7 +81,7 @@
   margin-right: 0.6rem;
   border-radius: 50%;
   border: 0.18rem solid rgba(89, 105, 67, 0.25);
-  border-top-color: #596943;
+  border-top-color: var(--qol-olive);
   animation: PZ2QoL_sfSpin 0.9s linear infinite;
 }
 @keyframes PZ2QoL_sfSpin {

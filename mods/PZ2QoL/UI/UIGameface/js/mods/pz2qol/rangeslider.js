@@ -20,7 +20,8 @@ export function rangeSlider({ bounds, get, set, step = 1, fmt = (lo, hi) => `${l
     const value = h('div.PZ2QoL_rngValue');
     const node = h(`div.PZ2QoL_rng${cls ? '.' + cls : ''}`, null, track, value);
     let live = null; // [lo, hi] while dragging
-    let which = null; // 'lo' | 'hi'
+    let which = null; // 'lo' | 'hi', or 'tie' until the first move picks one
+    let pressedAt = null;
 
     const range = () => {
         const b = bounds();
@@ -55,6 +56,10 @@ export function rangeSlider({ bounds, get, set, step = 1, fmt = (lo, hi) => `${l
     const move = x => {
         const v = fromX(x);
         if (v == null) return;
+        if (which === 'tie') {
+            if (v === pressedAt) return;
+            which = v < pressedAt ? 'lo' : 'hi';
+        }
         const [lo, hi] = current();
         live = which === 'lo' ? [Math.min(v, hi), hi] : [lo, Math.max(v, lo)];
         draw();
@@ -65,8 +70,11 @@ export function rangeSlider({ bounds, get, set, step = 1, fmt = (lo, hi) => `${l
         const v = fromX(e.clientX);
         if (v == null) return;
         const [lo, hi] = current();
-        // the nearer knob; on a tie, the side the click is on
-        which = Math.abs(v - lo) < Math.abs(v - hi) ? 'lo' : Math.abs(v - lo) > Math.abs(v - hi) ? 'hi' : (v < lo ? 'lo' : 'hi');
+        // the nearer knob; on a tie the side pressed, or between them (one value) the way the drag goes
+        const toLo = Math.abs(v - lo);
+        const toHi = Math.abs(v - hi);
+        which = toLo < toHi ? 'lo' : toLo > toHi ? 'hi' : v < lo ? 'lo' : v > hi ? 'hi' : 'tie';
+        pressedAt = v;
         setClass(node, 'dragging', true);
         move(e.clientX);
     });

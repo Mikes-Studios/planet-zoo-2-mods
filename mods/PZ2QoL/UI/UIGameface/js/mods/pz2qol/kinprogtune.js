@@ -47,15 +47,6 @@ export const PROGRAMME_TUNING = Object.freeze([
         ],
     },
     {
-        key: 'relatedPenalty', group: 'Groups', label: 'Related pairs together',
-        help: 'Relatives that could breed in the same habitat.',
-        choices: [
-            { id: 'default', label: 'Never' },
-            { id: 'avoid', label: 'Avoid', value: { relatedPenalty: 0.5 } },
-            { id: 'allow', label: 'Allow', value: { relatedPenalty: 0 } },
-        ],
-    },
-    {
         key: 'overCapacityPenalty', group: 'Groups', label: 'Habitat room',
         help: 'Adults over a habitat\'s room for the species.',
         choices: [
@@ -66,7 +57,7 @@ export const PROGRAMME_TUNING = Object.freeze([
     },
     {
         key: 'structurePenalty', group: 'Groups', label: 'Group make-up limit',
-        help: 'Breeders over the make-up or the game\'s most per sex.',
+        help: 'Breeders over the make-up. The game\'s most adults per sex in a habitat always applies.',
         choices: [
             { id: 'default', label: 'Strict' },
             { id: 'soft', label: 'Soft', value: { structurePenalty: 0.3 } },

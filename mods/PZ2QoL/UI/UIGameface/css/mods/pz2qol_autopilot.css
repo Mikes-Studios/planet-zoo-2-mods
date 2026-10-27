@@ -9,8 +9,8 @@
 
 /* ------------------------------------------------- the board's Auto button */
 
-.PZ2QoL_kb .PZ2QoL_kpBtn.PZ2QoL_kbAutoBtn.autoOn { box-shadow: inset 0 0 0 0.12rem #4F8A86; color: #2F6662; }
-.PZ2QoL_kb .PZ2QoL_kpBtn.PZ2QoL_kbAutoBtn.autoOn.on { color: #FFFFFF; background-color: #4F8A86; }
+.PZ2QoL_kb .PZ2QoL_kpBtn.PZ2QoL_kbAutoBtn.autoOn { box-shadow: inset 0 0 0 0.12rem var(--qol-teal); color: #2F6662; }
+.PZ2QoL_kb .PZ2QoL_kpBtn.PZ2QoL_kbAutoBtn.autoOn.on { color: #FFFFFF; background-color: var(--qol-teal); }
 
 /* ------------------------------------------------------------- the panel */
 
@@ -62,6 +62,22 @@
   color: var(--kp-kin-ink);
 }
 
+/* Clean up's habitats to tick */
+.PZ2QoL_kb .PZ2QoL_apPick {
+  flex-shrink: 0;
+  flex-direction: column;
+  margin-bottom: 0.25rem;
+  padding: 0.4rem 0.6rem;
+  border-radius: 0.55rem;
+  background-color: var(--qol-card);
+  border-left: 0.22rem solid transparent;
+  cursor: pointer;
+}
+.PZ2QoL_kb .PZ2QoL_apPick:hover { background-color: #FFC5C5; }
+.PZ2QoL_kb .PZ2QoL_apPick.on { border-left-color: var(--qol-olive); background-color: var(--qol-card-2); }
+.PZ2QoL_kb .PZ2QoL_apPickName { font-size: 0.9rem; font-weight: bold; white-space: nowrap; overflow: hidden; }
+.PZ2QoL_kb .PZ2QoL_apPickMeta { margin-top: 0.05rem; font-size: 0.72rem; color: var(--qol-ink-soft); white-space: nowrap; overflow: hidden; }
+
 /* the last runs */
 .PZ2QoL_kb .PZ2QoL_apRuns { flex-shrink: 0; flex-direction: column; }
 .PZ2QoL_kb .PZ2QoL_apRunHead {
@@ -88,7 +104,7 @@
 }
 .PZ2QoL_kb .PZ2QoL_apLog.skip .PZ2QoL_apLogMark { background-color: var(--qol-red); }
 .PZ2QoL_kb .PZ2QoL_apLog.wait .PZ2QoL_apLogMark { background-color: var(--qol-teal); }
-.PZ2QoL_kb .PZ2QoL_apLog.undone .PZ2QoL_apLogMark { background-color: rgba(114, 91, 74, 0.45); }
+.PZ2QoL_kb .PZ2QoL_apLog.undone .PZ2QoL_apLogMark { background-color: var(--qol-ink-faint); }
 .PZ2QoL_kb .PZ2QoL_apLog.undone .PZ2QoL_apLogMain { text-decoration: line-through; color: var(--qol-ink-soft); }
 .PZ2QoL_kb .PZ2QoL_apLogText { flex: 1; flex-direction: column; min-width: 0; }
 .PZ2QoL_kb .PZ2QoL_apLogMain { font-size: 0.8rem; white-space: nowrap; overflow: hidden; color: var(--qol-ink); }
@@ -102,7 +118,7 @@
 /* -------------------------------------------------------------- notices */
 
 .PZ2QoL_apToasts { top: auto; bottom: 7rem; }
-.PZ2QoL_apToast .PZ2QoL_kinToastStripe { background-color: #4F8A86; }
+.PZ2QoL_apToast .PZ2QoL_kinToastStripe { background-color: var(--qol-teal); }
 .PZ2QoL_apToast.tone_warn .PZ2QoL_kinToastStripe { background-color: var(--qol-amber); }
 .PZ2QoL_apToast.tone_ok .PZ2QoL_kinToastStripe { background-color: var(--qol-great); }
 .PZ2QoL_apToastIcon {
@@ -111,10 +127,9 @@
   height: 1.4rem;
   margin-right: 0.45rem;
   border-radius: 0.7rem;
-  background-color: #4F8A86;
+  background-color: var(--qol-teal);
   background-image: url(/img/icons/IconTime.svg);
   background-size: 0.9rem 0.9rem;
   background-repeat: no-repeat;
   background-position: center;
 }
-body .PZ2QoL_apToasts.underPopup { display: none; }

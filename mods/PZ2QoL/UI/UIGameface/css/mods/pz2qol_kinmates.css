@@ -51,7 +51,7 @@
   padding: 0.4rem 0.6rem 0.45rem 0.45rem;
   border-radius: 0.6rem;
   border-left: 0.25rem solid var(--kin-ok);
-  background-color: #FFF9EE;
+  background-color: var(--qol-card);
   box-shadow: 0 0.08rem 0.35rem rgba(60, 45, 30, 0.2);
   color: var(--kin-ok);
   cursor: pointer;
@@ -83,7 +83,7 @@
 }
 .PZ2QoL_kmOffspring.sev_risk { color: var(--kin-risk); border-left-color: var(--kin-risk); background-color: #FBEDE6; }
 .PZ2QoL_kmOffspring.sev_kin { color: #9A5B12; border-left-color: var(--kin-kin); background-color: #FBF0DF; }
-.PZ2QoL_kmOffspring.sev_distant { color: #725B4A; border-left-color: rgba(114, 91, 74, 0.35); }
+.PZ2QoL_kmOffspring.sev_distant { color: var(--qol-ink); border-left-color: rgba(114, 91, 74, 0.35); }
 .PZ2QoL_kmOffspring.sev_none { color: var(--kin-ok); border-left-color: var(--kin-ok); }
 
 /* ------------------------------------------ Compare Mates: sort toggle */
@@ -97,7 +97,7 @@
   padding: 0 0.35rem 0 0.4rem;
   border-radius: 0.8rem;
   background-color: rgba(114, 91, 74, 0.1);
-  color: #725B4A;
+  color: var(--qol-ink);
   font-size: 0.78rem;
   font-weight: bold;
   white-space: nowrap;

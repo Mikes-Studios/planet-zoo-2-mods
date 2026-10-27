@@ -146,12 +146,12 @@ export async function hud(page, ctx) {
         await page.waitForTimeout(250);
         facts.popover = await page.evaluate(() => ({
             switches: [...document.querySelectorAll('.PZ2QoL_kpPopover.open .PZ2QoL_kpSwitchLabel')].map(n => n.innerText),
-            levels: [...document.querySelectorAll('.PZ2QoL_kpPopover.open [data-toast-level]')].map(n => n.innerText + (n.classList.contains('on') ? '*' : '')),
+            levels: [...document.querySelectorAll('.PZ2QoL_kpPopover.open [data-setting="toastLevel"] [data-value]')].map(n => n.innerText + (n.classList.contains('on') ? '*' : '')),
         }));
         await ctx.shot(page, 'kla_3_settings');
         if (!facts.popover.switches.includes('Animals growing up')) problems.push(`no "Animals growing up" switch: ${facts.popover.switches}`);
         if (facts.popover.levels.join('|') !== 'Needs you|Heads-up too*') problems.push(`"Pop up for" choices: ${facts.popover.levels}`);
-        await page.locator('.PZ2QoL_kpPopover.open [data-toast-level="action"]').first().click();
+        await page.locator('.PZ2QoL_kpPopover.open [data-setting="toastLevel"] [data-value="action"]').first().click();
         await page.waitForTimeout(150);
         facts.levelAfterClick = await page.evaluate(async () => (await import('/js/mods/pz2qol/kin.js')).getKinSettings().toastLevel);
         if (facts.levelAfterClick !== 'action') problems.push(`clicking Needs you set toastLevel ${facts.levelAfterClick}`);

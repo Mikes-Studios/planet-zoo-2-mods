@@ -1,7 +1,7 @@
 // node --test tests/engines_equivalence.test.mjs
 // Design section 0a: with no Autopilot option set, Suggest fixes, the
-// Breeding programme and Thin out answer exactly what they answered before
-// Autopilot existed (golden file recorded from that code).
+// Breeding programme and Thin out answer exactly what the golden file
+// records (re-recorded only for a deliberate change to an engine).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';

@@ -21,14 +21,30 @@ function label(a) {
 async function sendOn(a) {
     breadcrumb('kin_quarantine_send');
     const r = await moveAnimal(a.id, TRADE, { direct: true });
-    if (r && r.ok) quarantinedForTrade().delete(String(a.id));
+    if (r && r.ok) {
+        quarantinedForTrade().delete(String(a.id));
+        kinToast({ severity: 'covered', level: 'heads', kind: 'quarantine', answer: true, title: `${a.name || 'Animal'} is on its way to the trade centre`, text: 'It passed quarantine.', species: a.species });
+        return;
+    }
+    // not sent: a click on Try again, or the next scan's Passed quarantine notice once this one goes
+    let retried = false;
     kinToast({
-        severity: r && r.ok ? 'covered' : 'risk',
-        level: 'heads',
+        severity: 'risk',
+        level: 'action',
         kind: 'quarantine',
-        title: r && r.ok ? `${a.name || 'Animal'} is on its way to the trade centre` : `${a.name || 'Animal'} was not sent`,
-        text: r && r.ok ? 'It passed quarantine.' : `The game said no: ${(r && r.detail) || 'no answer'}.`,
+        title: `${a.name || 'Animal'} was not sent`,
+        text: `The game said no: ${(r && r.detail) || 'no answer'}. It is still in quarantine: try again in a moment.`,
         species: a.species,
+        actions: [{
+            label: 'Try again', icon: 'IconTradeCentre', primary: true,
+            run: () => {
+                retried = true;
+                sendOn(a);
+            },
+        }],
+        onClose: () => {
+            if (!retried) alerted.delete(a.id);
+        },
     });
 }
 

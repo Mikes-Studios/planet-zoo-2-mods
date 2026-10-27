@@ -16,32 +16,37 @@
 //     mod's Species filter chip (bars.js, session only, one click clears it)
 //     and confirms (PZ2QoL_TradeAck). The Market species filter is the
 //     game's own (set before the hub opens) and stays set afterwards, as
-//     with the game's Zoopedia button.
+//     with the game's Zoopedia button. A notice's Market also hands over
+//     the sex wanted, a dim line and, strict, the calf floor its listings
+//     must meet (formatTradeExtra): once the Market is up the page sets the
+//     game's own filters and the mod's dim line, and confirms the same way.
 // Nothing here is sent to Frontier: it only opens screens and filters lists.
-import * as DS from '/js/common/core/DataStore.js';
 import { breadcrumb, reportError } from '/js/mods/pz2qol/errors.js';
 import { isFrontendPage, isHudPage } from '/js/mods/pz2qol/kinhooks.js';
 import { isBreedingHeatmapOn, setBreedingHeatmap } from '/js/mods/pz2qol/kin.js';
 import { getPlanRun } from '/js/mods/pz2qol/kinmoves.js';
 import { getSendRun } from '/js/mods/pz2qol/storagesend.js';
 import { getStorageSource, setStorageFilters } from '/js/mods/pz2qol/listfilter.js';
-import { h, icon } from '/js/mods/pz2qol/ui.js';
-import { countsText, normSpecies, parseCounts, pendingStep, tradeBlockReason } from '/js/mods/pz2qol/tradejumpcore.js';
+import { h, icon, visibilityWatch, visibleBox } from '/js/mods/pz2qol/ui.js';
+import { HUB_OPEN_ERRORS } from '/js/mods/pz2qol/storagefetchcore.js';
+import { countsText, formatTradeExtra, normSpecies, parseCounts, parseTradeExtra, pendingStep, STRICT_MARKET_EVENTS, tradeBlockReason } from '/js/mods/pz2qol/tradejumpcore.js';
+import { get, MARKET_EVENT, sendScreenEvent } from '/js/mods/pz2qol/game.js';
+import { setMarketDimBelow } from '/js/mods/pz2qol/badges.js';
+import { clearMarketMates, setMarketMates } from '/js/mods/pz2qol/marketcalves.js';
 
 const ANSWER_TIMEOUT_MS = 6000;
 const COUNTS_FRESH_MS = 60000;
 const ERROR_SHOW_MS = 9000;
 const HUB_TICK_MS = 500;
+// the Market's extras: kept this long for the Market to come up, applied this
+// long after it is on screen (the game's own species filter loads first)
+const PENDING_MARKET_MS = 60000;
+const MARKET_SETTLE_MS = 1000;
 
-const OPEN_ERRORS = {
-    nobuilding: 'Build a trade centre to use Market & Storage',
-    nopark: 'Only while a zoo is running',
-    nohub: "The game's hub could not be reached",
-    badspecies: 'This species has no name the hub knows',
+const OPEN_ERRORS = Object.freeze(Object.assign({}, HUB_OPEN_ERRORS, {
     badkind: 'Unknown screen',
     noanswer: 'The game did not answer. Use the Market & Storage button instead.',
-    busy: 'Already opening the hub…',
-};
+}));
 
 // ------------------------------------------------------------ talking to Lua
 
@@ -87,15 +92,6 @@ function ask(event, timeoutValue, ...args) {
 
 // ------------------------------------------------------------------ park
 
-function ds(ctx, key) {
-    try {
-        return DS.getValue(ctx, key);
-    }
-    catch (e) {
-        return undefined;
-    }
-}
-
 // '' when the buttons can be used, else why not (shown under them).
 export function canOpenTrade() {
     let planRunning = false, sendRunning = false;
@@ -115,8 +111,8 @@ export function canOpenTrade() {
     return tradeBlockReason({
         engine: typeof engine !== 'undefined' && isHudPage(),
         // the game's own Market & Storage tab is greyed out without one
-        hasBuilding: ds(['park'], 'hasBuildingForAnimalStorage'),
-        hubDisabled: ds(['ui', 'HUD'], 'hubDisabled') === true,
+        hasBuilding: get(['park'], 'hasBuildingForAnimalStorage'),
+        hubDisabled: get(['ui', 'HUD'], 'hubDisabled') === true,
         planRunning,
         sendRunning,
     });
@@ -126,7 +122,8 @@ let opening = false;
 
 // Opens the hub on 'storage' or 'market' for one species. Resolves
 // { ok, detail, text }; text says what went wrong.
-export async function openTrade(kind, species) {
+// extra (Market, from a notice): { sex: 'm' | 'f', dimBelow, mates, floor, strict } for the hub page
+export async function openTrade(kind, species, extra = {}) {
     const why = canOpenTrade();
     if (why) return { ok: false, detail: 'blocked', text: why };
     if (opening) return { ok: false, detail: 'busy', text: OPEN_ERRORS.busy };
@@ -142,7 +139,7 @@ export async function openTrade(kind, species) {
             }
         }
         breadcrumb('trade_click_' + kind);
-        const r = await ask('PZ2QoL_TradeOpen', { ok: false, detail: 'noanswer' }, String(kind), String(species || ''));
+        const r = await ask('PZ2QoL_TradeOpen', { ok: false, detail: 'noanswer' }, String(kind), String(species || ''), formatTradeExtra(extra));
         if (r && r.ok) {
             breadcrumb('trade_open');
             return { ok: true, detail: '', text: '' };
@@ -242,7 +239,7 @@ export function tradeRow(species, opts = {}) {
     const why = canOpenTrade();
     const err = lastError && lastError.species === species && Date.now() < lastError.until ? lastError.text : '';
     let noteText = why || err;
-    let warn = !!noteText;
+    const warn = !!noteText;
     if (!noteText && showCounts) noteText = countsText(getStorageCounts(species));
     const note = h(`div.PZ2QoL_tradeNote${warn ? '.warn' : ''}${noteText ? '' : '.empty'}`, { text: noteText });
     const make = (kind, label, iconName, tip) => {
@@ -287,18 +284,13 @@ export function tradeRow(species, opts = {}) {
 // ------------------------------------------------------------------- hub
 
 let pending = null;      // { seq, species, at }
+let pendingMarket = null; // { seq, species, sex, dimBelow, mates, floor, at }: the Market's extras from a needs notice
+let marketSince = 0;
 let lastApplied = null;  // seq
 let visibleSince = 0;
 
 function isVisible(sel) {
-    const node = document.querySelector(sel);
-    if (!node) return false;
-    const r = node.getBoundingClientRect();
-    if (r.width <= 0 || r.height <= 0) return false;
-    for (let n = node; n && n !== document.body; n = n.parentNode) {
-        if (n.classList && n.classList.contains('hidden')) return false;
-    }
-    return true;
+    return !!visibleBox(document.querySelector(sel));
 }
 
 function hello() {
@@ -319,15 +311,50 @@ function ack(seq) {
     }
 }
 
+// The needs notice's Market: the game's own male / female filter (as the
+// market presets send them) and the mod's dim line, once the Market is up.
+function marketTick() {
+    const vis = isVisible('.AnimalMarketMarket_header');
+    if (!vis) {
+        if (marketSince) clearMarketMates();
+        marketSince = 0;
+        return;
+    }
+    if (!marketSince) {
+        marketSince = Date.now();
+        hello();
+    }
+    if (!pendingMarket) return;
+    if (Date.now() - pendingMarket.at > PENDING_MARKET_MS) {
+        pendingMarket = null;
+        breadcrumb('trade_market_expired');
+        return;
+    }
+    // the list's first answer first
+    if (Date.now() - marketSince < MARKET_SETTLE_MS) return;
+    const p = pendingMarket;
+    pendingMarket = null;
+    lastApplied = p.seq;
+    const events = p.strict ? STRICT_MARKET_EVENTS.slice() : [];
+    if (p.sex) events.push(['FilterIsMale', p.sex === 'm'], ['FilterIsFemale', p.sex === 'f']);
+    if (events.length) {
+        for (const [suffix, value] of events) sendScreenEvent(MARKET_EVENT, suffix, value);
+        sendScreenEvent(MARKET_EVENT, 'FilterMenuConfirm');
+    }
+    if (p.dimBelow != null) setMarketDimBelow(p.dimBelow);
+    setMarketMates(p.mates.length ? { species: p.species, sex: p.sex, mates: p.mates, floor: p.floor, strict: p.strict } : null);
+    ack(p.seq);
+    breadcrumb('trade_market_applied');
+}
+
+// a filter may have come in while the page was elsewhere
+const storageShown = visibilityWatch('.AnimalMarketStorage_header', hello);
+
 function hubTick() {
     try {
-        const vis = isVisible('.AnimalMarketStorage_header');
-        if (vis && !visibleSince) {
-            visibleSince = Date.now();
-            // a filter may have come in while the page was elsewhere
-            hello();
-        }
-        if (!vis) visibleSince = 0;
+        marketTick();
+        visibleSince = storageShown();
+        const vis = visibleSince > 0;
         if (!pending) return;
         const step = pendingStep(pending, { now: Date.now(), storageVisible: vis, rowCount: vis ? getStorageSource().length : 0, visibleSince });
         if (step === 'expire') {
@@ -349,7 +376,13 @@ function hubTick() {
 }
 
 function installHub() {
-    engine.on('PZ2QoL_TradeFilter', (seq, kind, species) => {
+    engine.on('PZ2QoL_TradeFilter', (seq, kind, species, extra) => {
+        if (kind === 'market') {
+            if (seq === lastApplied) return ack(seq);
+            pendingMarket = Object.assign({ seq, at: Date.now(), species: String(species || '') }, parseTradeExtra(extra));
+            breadcrumb('trade_market_got');
+            return;
+        }
         if (kind !== 'storage' || !species) return;
         if (seq === lastApplied) {
             // already applied (the answer to a second hello): only confirm

@@ -17,9 +17,10 @@ test('every tuning has one default choice and options the engine knows', () => {
 });
 
 test('normalizeTuning keeps known keys and choices, drops defaults and junk', () => {
-    assert.deepEqual(normalizeTuning({ relatedPenalty: 'allow', lineBonus: 'default', bogus: 'x', spareOut: 'nope' }), { relatedPenalty: 'allow' });
+    // relatives are never paired: there is no tuning that allows it, and a kept choice for it is dropped
+    assert.deepEqual(normalizeTuning({ structurePenalty: 'soft', relatedPenalty: 'allow', lineBonus: 'default', bogus: 'x', spareOut: 'nope' }), { structurePenalty: 'soft' });
     assert.deepEqual(normalizeTuning(null), {});
-    assert.deepEqual(normalizeTuning(['allow']), {});
+    assert.deepEqual(normalizeTuning(['soft']), {});
 });
 
 test('applyTuning puts the choices on top, the rest untouched', () => {
@@ -40,16 +41,16 @@ test('tuningKey is stable and empty for the defaults', () => {
     assert.equal(tuningKey({ lineBonus: 'default' }), '');
     assert.equal(tuningKey({ spareOut: 'stay', lineBonus: 'off' }), tuningKey({ lineBonus: 'off', spareOut: 'stay' }));
     assert.equal(tuningCount({ spareOut: 'stay', lineBonus: 'off', x: 1 }), 2);
-    assert.equal(tuningChoice({}, 'relatedPenalty').id, 'default');
-    assert.equal(tuningChoice({ relatedPenalty: 'avoid' }, 'relatedPenalty').label, 'Avoid');
+    assert.equal(tuningChoice({}, 'structurePenalty').id, 'default');
+    assert.equal(tuningChoice({ structurePenalty: 'soft' }, 'structurePenalty').label, 'Soft');
 });
 
 test('Auto mode applies the tuning on top of its own search budget', () => {
     const settings = { step: 3, trade: true };
     const plain = programmeOptionsFor(settings, 'auto', null);
-    assert.equal(plain.relatedPenalty, undefined);
-    const tuned = programmeOptionsFor(settings, 'auto', null, { relatedPenalty: 'allow', search: 'long' });
-    assert.equal(tuned.relatedPenalty, 0);
+    assert.equal(plain.structurePenalty, undefined);
+    const tuned = programmeOptionsFor(settings, 'auto', null, { structurePenalty: 'soft', search: 'long' });
+    assert.equal(tuned.structurePenalty, 0.3);
     assert.equal(tuned.maxEvaluations, 10000000);
     assert.equal(tuned.moveCost, plain.moveCost);
 });

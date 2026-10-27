@@ -235,7 +235,7 @@ export async function frontend(page, ctx) {
 
         // 1. Leave it by default: no note, the List button as before
         facts.leave = await side();
-        if (!/^When the server refuses a listing: Leave it, Quick trade it or Quick release it/.test(facts.leave.label) || JSON.stringify(facts.leave.options.map(o => o[0])) !== '["leave","quicktrade","release"]' || !facts.leave.options[0][2]) problems.push(`the option: ${JSON.stringify(facts.leave)}`);
+        if (!/^When the server refuses a listing: Leave it, Quick trade, Quick release/.test(facts.leave.label) || JSON.stringify(facts.leave.options.map(o => o[0])) !== '["leave","quicktrade","release"]' || !facts.leave.options[0][2]) problems.push(`the option: ${JSON.stringify(facts.leave)}`);
         if (facts.leave.note || !/^List \d+ animals?$/.test(facts.leave.list)) problems.push(`Leave it: ${JSON.stringify(facts.leave)}`);
         await ctx.shot(page, 'mqr_0_leave');
 

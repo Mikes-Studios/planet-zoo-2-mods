@@ -1,12 +1,13 @@
 // Breeding window: the pure part (no game imports, so node tests can load it).
 //  - which habitat a click in the park picked (the game's info panel context);
 //  - the species list: in the zoo, in storage, and every species the game
-//    knows (its Zoopedia), filtered by a search;
+//    knows (speciesrules HABITAT_SPECIES, from animals.fdb), filtered by a search;
 //  - a species' habitats: set aside for it, where it lives now, where it
 //    may go;
+//  - the zoo's habitats, and the species of the ones chosen: set aside,
+//    living there, the rest;
 //  - the programme's moves that can run now.
-import { speciesId } from './speciesnamecore.js';
-import { canMove, isPinned, TRADE } from './kinboardcore.js';
+import { canMove, habitatPrints, isPinned, placeName } from './kinboardcore.js';
 
 // The info panel the game opened, as InfoPanel_SetContext names it:
 // [root, kind, entity, ...]. A habitat's own panel is 'habitatGateInfoPanel'
@@ -43,41 +44,9 @@ export function pickedHabitat(ctx, model) {
     return { error: 'That is not a habitat. Click a habitat\'s fence or gate, or an animal in it.' };
 }
 
-// The species a game info panel shows (to open the window on it):
-// an animal's species, or a habitat's most numerous species.
-export function speciesOfPanel(ctx, model) {
-    const t = infoPanelTarget(ctx);
-    if (!model || !model.animals) return null;
-    if (t.kind === 'animal') {
-        const a = model.animals.get(t.id);
-        return a && a.species && !a.exhibit ? a.species : null;
-    }
-    if (t.kind === 'habitat') {
-        const n = new Map();
-        for (const a of model.animals.values()) if (a.hab === t.id && a.species && !a.exhibit) n.set(a.species, (n.get(a.species) || 0) + 1);
-        let best = null;
-        for (const [sp, c] of n) if (!best || c > best[1]) best = [sp, c];
-        return best ? best[0] : null;
-    }
-    return null;
-}
-
-// The game's Zoopedia rows (DataStore ['Zoopedia','Animals']) -> species ids.
-// Shoals, exhibit animals and locked species are left out. rows: [{ key,
-// id, isShoal, isExhibitAnimal, isLocked, isDlcLocked }]
-export function catalogueFromZoopedia(rows) {
-    const out = [];
-    const seen = new Set();
-    for (const r of rows || []) {
-        if (!r) continue;
-        const raw = r.id != null && String(r.id) !== '' ? r.id : r.key;
-        const id = speciesId(raw);
-        if (!id || !/^[A-Za-z0-9_]+$/.test(id) || seen.has(id)) continue;
-        if (r.isShoal === true || r.isExhibitAnimal === true || r.isLocked === true || r.isDlcLocked === true) continue;
-        seen.add(id);
-        out.push(id);
-    }
-    return out;
+// Rows by the name they show.
+export function byName(x, y) {
+    return x.name < y.name ? -1 : x.name > y.name ? 1 : 0;
 }
 
 function words(s) {
@@ -111,7 +80,6 @@ export function speciesChoices({ zoo = [], stored = new Map(), catalogue = [], a
         row(sp).stored = c.m + c.f;
     }
     for (const sp of assigned.keys()) row(sp);
-    const byName = (x, y) => (x.name < y.name ? -1 : x.name > y.name ? 1 : 0);
     const hit = r => matchesQuery(r.species, r.name, query);
     const all = Array.from(rows.values());
     const zooRows = all.filter(r => r.zoo > 0 && hit(r)).sort(byName);
@@ -130,6 +98,79 @@ export function speciesChoices({ zoo = [], stored = new Map(), catalogue = [], a
     return { zoo: zooRows, stored: storedRows, other, more };
 }
 
+// Every habitat in the zoo, empty ones too (assignments: Map habitat ->
+// Set(species)). -> [{ hab, name, species (set aside), animals (living there) }]
+export function habitatChoices(model, assignments) {
+    const animals = new Map();
+    for (const a of model && model.animals ? model.animals.values() : []) {
+        if (a.hab && !a.exhibit && a.alive !== false) animals.set(String(a.hab), (animals.get(String(a.hab)) || 0) + 1);
+    }
+    const out = habitatPrints(model).map(p => ({
+        hab: p.id,
+        name: p.name || placeName(model, p.id),
+        species: Array.from((assignments && assignments.get(p.id)) || []),
+        animals: animals.get(p.id) || 0,
+    }));
+    return out.sort(byName);
+}
+
+// The species of one or more habitats for the window's "Choose habitats",
+// in four groups:
+//   ticked   set aside for any of them (assignments: Map habitat -> Set(species));
+//            count: in how many
+//   living   living in one of them, not set aside
+//   yours    your other species, in the zoo or in storage
+//   other    every other species the game knows (only while searching)
+// The search narrows yours and other only. Each row: { species, name,
+// here: { m, f, young } in these habitats, zoo (animals in the zoo), stored
+// (adults in storage or null), count }.
+export function habitatSpeciesRows({ habs = [], model, assignments, zoo = [], stored = new Map(), catalogue = [], query = '', nameOf = s => s, otherMax = 30 } = {}) {
+    const rows = new Map();
+    const row = sp => {
+        if (!rows.has(sp)) rows.set(sp, { species: sp, name: nameOf(sp), here: { m: 0, f: 0, young: 0 }, zoo: 0, stored: null, count: 0 });
+        return rows.get(sp);
+    };
+    const ids = new Set(habs.map(String));
+    const ticked = new Set();
+    for (const id of ids) {
+        for (const sp of (assignments && assignments.get ? assignments.get(id) : null) || []) {
+            ticked.add(sp);
+            row(sp).count++;
+        }
+    }
+    const living = new Set();
+    for (const a of model && model.animals ? model.animals.values() : []) {
+        if (!ids.has(String(a.hab)) || !a.species || a.exhibit || a.alive === false) continue;
+        living.add(a.species);
+        const here = row(a.species).here;
+        if (a.juv) here.young++;
+        else if (a.sex === 1) here.f++;
+        else here.m++;
+    }
+    for (const s of zoo) row(s.species).zoo = s.animals || 0;
+    for (const [sp, c] of stored) if (c && c.m + c.f > 0) row(sp).stored = c.m + c.f;
+    const hit = r => matchesQuery(r.species, r.name, query);
+    const all = Array.from(rows.values());
+    const out = {
+        ticked: all.filter(r => ticked.has(r.species)).sort(byName),
+        living: all.filter(r => !ticked.has(r.species) && living.has(r.species)).sort(byName),
+        yours: all.filter(r => !ticked.has(r.species) && !living.has(r.species) && (r.zoo > 0 || r.stored) && hit(r)).sort(byName),
+        other: [],
+        more: 0,
+    };
+    if (words(query)) {
+        for (const sp of catalogue) {
+            if (rows.has(sp)) continue;
+            const name = nameOf(sp);
+            if (matchesQuery(sp, name, query)) out.other.push({ species: sp, name, here: { m: 0, f: 0, young: 0 }, zoo: 0, stored: null, count: 0 });
+        }
+        out.other.sort(byName);
+    }
+    out.more = Math.max(0, out.other.length - otherMax);
+    out.other = out.other.slice(0, otherMax);
+    return out;
+}
+
 // A species' habitats for the window's Habitats tab:
 //   assigned  set aside for it (assignments: Map habitat -> Set(species))
 //   living    it lives there, not set aside
@@ -143,17 +184,11 @@ export function habitatRows(model, species, assignments, dest) {
     if (!model || !species) return out;
     const d = dest && dest.bySpecies ? dest.bySpecies[species] || null : null;
     const habs = new Map();
-    const nameOf = id => {
-        const h = model.habitats && model.habitats.get(String(id));
-        if (h && h.name) return h.name;
-        const x = dest && Array.isArray(dest.habitats) ? dest.habitats.find(y => String(y.id) === String(id)) : null;
-        return x && x.name ? x.name : `Habitat ${id}`;
-    };
     const row = id => {
         const k = String(id);
         if (!habs.has(k)) {
             const v = d && d[k];
-            habs.set(k, { hab: k, name: nameOf(k), here: { m: 0, f: 0, young: 0 }, others: new Set(), ok: v ? !!v.ok : null, reason: v && v.reason ? String(v.reason) : '', shared: [] });
+            habs.set(k, { hab: k, name: placeName(model, k, dest), here: { m: 0, f: 0, young: 0 }, others: new Set(), ok: v ? !!v.ok : null, reason: v && v.reason ? String(v.reason) : '', shared: [] });
         }
         return habs.get(k);
     };
@@ -168,9 +203,6 @@ export function habitatRows(model, species, assignments, dest) {
             else r.here.m++;
         }
     }
-    for (const a of model.animals.values()) {
-        if (a.hab && a.species && a.species !== species && habs.has(String(a.hab))) habs.get(String(a.hab)).others.add(a.species);
-    }
     const set = new Set();
     for (const [hab, sps] of assignments || []) {
         if (!sps || !sps.has(species)) continue;
@@ -181,12 +213,16 @@ export function habitatRows(model, species, assignments, dest) {
     if (d) {
         for (const [id, v] of Object.entries(d)) if (v && v.ok && !habs.has(String(id))) row(id);
     }
+    for (const a of model.animals.values()) {
+        if (!a.hab || !a.species || a.species === species || a.exhibit || a.alive === false) continue;
+        const r = habs.get(String(a.hab));
+        if (r) r.others.add(a.species);
+    }
     // a habitat set aside for other species only is not suggested
     const takenByOthers = id => {
         const sps = assignments && assignments.get ? assignments.get(String(id)) : null;
         return !!(sps && sps.size && !sps.has(species));
     };
-    const byName = (x, y) => (x.name < y.name ? -1 : x.name > y.name ? 1 : 0);
     for (const r of habs.values()) {
         r.others = Array.from(r.others);
         const n = r.here.m + r.here.f + r.here.young;
@@ -212,6 +248,15 @@ export function runnableMoves(model, moves) {
     return out;
 }
 
+// A deep result kept from before the breeders changed (the programme view's
+// stale flag), in words: '' when the plan shown is current. Its moves may
+// no longer fit, so it is shown but never run as it is.
+export function staleDeepText(view) {
+    if (!view || view.kind !== 'deep' || !view.stale || !view.r) return '';
+    const n = (view.r.moves || []).length;
+    return `The breeders changed since this deep search (${n} move${n === 1 ? '' : 's'}; some may no longer apply).`;
+}
+
 // What the programme depends on for one species (the board's
 // programmeSig): its animals and its habitats set aside. A scan that
 // changes nothing of it keeps the plan.
@@ -227,13 +272,4 @@ export function programmeSignature(model, species, assignments) {
     const assigned = [];
     for (const [hab, set] of assignments || []) if (set && set.has(species)) assigned.push(String(hab));
     return rows.join(';') + '|' + assigned.sort().join(',');
-}
-
-// "Lion Savannah" -> "Lion Savannah" | the trade centre
-export function moveTarget(model, to, dest) {
-    if (to === TRADE) return (dest && dest.tradeCentre && dest.tradeCentre.name) || (model && model.tradeCentre && model.tradeCentre.name) || 'Trade centre';
-    const h = model && model.habitats ? model.habitats.get(String(to)) : null;
-    if (h && h.name) return h.name;
-    const x = dest && Array.isArray(dest.habitats) ? dest.habitats.find(y => String(y.id) === String(to)) : null;
-    return x && x.name ? x.name : `Habitat ${to}`;
 }

@@ -51,16 +51,26 @@ export function nicePrice(p) {
     return Math.max(step, Math.round(p / step) * step);
 }
 
+// the slopes grow with the square of the points: the fit takes at most this many, spread over x
+const FIT_SAMPLE = 60;
+
+function spreadSample(points, xOf, size) {
+    if (points.length <= size) return points;
+    const sorted = points.slice().sort((a, b) => xOf(a) - xOf(b));
+    return Array.from({ length: size }, (_, i) => sorted[Math.round(i * (sorted.length - 1) / (size - 1))]);
+}
+
 // Theil-Sen fit of price against x (pairs at least minGap apart): robust to a
 // few odd listings. The slope is never negative: more never sells for less.
 function fitPrice(points, xOf, minGap) {
     const pts = points.filter(p => xOf(p) != null && p.price > 0);
     if (pts.length < 4) return null;
+    const sample = spreadSample(pts, xOf, FIT_SAMPLE);
     const slopes = [];
-    for (let i = 0; i < pts.length; i++) {
-        for (let j = i + 1; j < pts.length; j++) {
-            const dx = xOf(pts[j]) - xOf(pts[i]);
-            if (Math.abs(dx) >= minGap) slopes.push((pts[j].price - pts[i].price) / dx);
+    for (let i = 0; i < sample.length; i++) {
+        for (let j = i + 1; j < sample.length; j++) {
+            const dx = xOf(sample[j]) - xOf(sample[i]);
+            if (Math.abs(dx) >= minGap) slopes.push((sample[j].price - sample[i].price) / dx);
         }
     }
     if (slopes.length < 3) return null;
@@ -258,6 +268,8 @@ export function morphPremium(species, listings) {
 //        the same medal plus the nearest other medals, their prices scaled by
 //        medalRatio() (medalMode 'scaled'); the whole species with fewer than
 //        3 when no group has 3.
+//     Fewer than 3 rated listings in the species but some unrated: the
+//     tiers below over all of them, other medals scaled (medalMode 'unrated').
 //   Otherwise (no medals recorded), as before medals were known:
 //     tier 1: same gender and life stage; tier 2: same gender; tier 3: any.
 // Scaled entries are copies with the scaled `price`, the listed `rawPrice`
@@ -306,7 +318,14 @@ function comparablesIn(animal, listings) {
         && l.id != animal.id && l.id != ownKey && !!l.isShoal == !!animal.isShoal);
     const group = base.filter(l => l.gender == animal.gender && lifeStage(l.maturity) == stage);
     const medal = medalOf(animal);
-    if (medal != undefined && base.some(l => medalOf(l) != undefined)) {
+    const rated = l => medalOf(l) != undefined;
+    const ratedCount = medal != undefined ? base.filter(rated).length : 0;
+    const ratioGroups = [{ list: group, source: 'this sex and age group' }, { list: base, source: 'this species' }];
+    if (ratedCount > 0 && ratedCount < MIN_COMPS && ratedCount < base.length) {
+        // too few rated listings to price by medal alone: the unrated ones count too
+        return unratedComparables(animal, medal, sexAgeTiers(animal, base, group), ratioGroups, listings);
+    }
+    if (ratedCount > 0) {
         const pools = [
             { tier: 1, scope: 'same sex and age group', list: group },
             { tier: 2, scope: 'same age group, any sex', list: base.filter(l => lifeStage(l.maturity) == stage) },
@@ -318,17 +337,43 @@ function comparablesIn(animal, listings) {
                 return { tier: p.tier, label: `same medal, ${p.scope}`, medal, medalMode: 'same', sameCount: same.length, list: same };
             }
         }
-        const ratioGroups = [{ list: group, source: 'this sex and age group' }, { list: base, source: 'this species' }];
-        const rated = l => medalOf(l) != undefined;
         const pool = pools.find(p => p.list.filter(rated).length >= MIN_COMPS) || pools[2];
         return Object.assign(scaledComparables(animal, medal, pool, ratioGroups, listings), { tier: pool.tier });
     }
-    const tiers = [
+    return pickTier(sexAgeTiers(animal, base, group));
+}
+
+function sexAgeTiers(animal, base, group) {
+    return [
         { tier: 1, label: 'same sex and age group', list: group },
         { tier: 2, label: 'same sex', list: base.filter(l => l.gender == animal.gender) },
         { tier: 3, label: 'any sex', list: base },
     ];
+}
+
+function pickTier(tiers) {
     return tiers.find(t => t.list.length >= MIN_COMPS) || tiers.find(t => t.list.length > 0) || { tier: 0, label: 'no market data', list: [] };
+}
+
+// a single rated listing must not stand in for many unrated ones: all of them count, other medals scaled
+function unratedComparables(animal, medal, tiers, ratioGroups, allListings) {
+    const pick = pickTier(tiers);
+    let guessed = false;
+    const list = pick.list.map(l => {
+        const listingMedal = medalOf(l);
+        if (listingMedal == undefined || listingMedal == medal) return l;
+        const r = medalRatio(listingMedal, medal, ratioGroups, allListings);
+        guessed = guessed || r.guessed;
+        return Object.assign({}, l, { price: l.price * r.ratio, rawPrice: l.price, medalFactor: r.ratio });
+    });
+    return Object.assign({}, pick, {
+        medal,
+        medalMode: 'unrated',
+        ratedCount: list.filter(l => medalOf(l) != undefined).length,
+        sameCount: list.filter(l => medalOf(l) == medal).length,
+        guessed,
+        list,
+    });
 }
 
 // Too few listings of the animal's own medal: add the nearest other medals
@@ -483,23 +528,25 @@ export function recommendPrice(animal, listings, game = {}, options = {}) {
     if (price == null) {
         return { price: null, confidence: 'none', reason: 'No market data and no game value', comps: comp, score, gameValue };
     }
-    // the price before the player's offset, for display
-    let basePrice = nicePrice(price);
     const offset = isFinite(opts.offset) ? opts.offset : 0;
-    const unclamped = nicePrice(price * (1 + offset));
     // the game's own limits always win
     const clamp = p => {
         if (game.min != null) p = Math.max(game.min, p);
         if (game.max != null) p = Math.min(game.max, p);
         return p;
     };
-    basePrice = clamp(basePrice);
+    // the price before the player's offset, for display
+    const wanted = nicePrice(price);
+    const basePrice = clamp(wanted);
+    // the offset applies to the price as shown: -50% of 14,000 capped at 10,000 is 5,000
+    const unclamped = nicePrice(basePrice * (1 + offset));
     price = clamp(unclamped);
     const parts = reasonParts(animal, comp, { med, medScore, method, morphName: typeof opts.morphName === 'function' ? opts.morphName : null });
     if (gameValue != null) parts.push(`game value ${gameValue} CC (weight ${Math.round((1 - weight) * 100)}%)`);
     if (offset) parts.push(`your offset ${offsetLabel(offset)} (${basePrice} CC before it)`);
-    if (price < unclamped) parts.push(`capped at the game's maximum ${fmt(game.max)} CC`);
-    if (price > unclamped) parts.push(`raised to the game's minimum ${fmt(game.min)} CC`);
+    // a limit held the price, before the offset or after it
+    if (price === game.max && (wanted > game.max || unclamped > game.max)) parts.push(`capped at the game's maximum ${fmt(game.max)} CC`);
+    if (price === game.min && (wanted < game.min || unclamped < game.min)) parts.push(`raised to the game's minimum ${fmt(game.min)} CC`);
     return {
         price,
         basePrice,
@@ -520,11 +567,12 @@ const CONF_ORDER = ['none', 'low', 'medium', 'high'];
 
 // high: 6+ comparables of the animal's own medal (or, without medals, sex)
 // medium: 3+; low: fewer. Prices scaled from other medals are at most
-// medium, and at most low when a step ratio was a default guess.
+// medium, and at most low when a step ratio was a default guess; so are
+// prices mostly from listings without a medal.
 function confidenceOf(comp, fullAt) {
     const n = comp.list.length;
     let c = n >= fullAt && comp.tier <= 2 ? 'high' : n >= MIN_COMPS ? 'medium' : n > 0 ? 'low' : 'none';
-    if (comp.medalMode == 'scaled') {
+    if (comp.medalMode == 'scaled' || comp.medalMode == 'unrated') {
         const cap = comp.guessed ? 'low' : 'medium';
         if (CONF_ORDER.indexOf(c) > CONF_ORDER.indexOf(cap)) c = cap;
     }
@@ -579,7 +627,12 @@ function reasonParts(animal, comp, { med, medScore, method, morphName }) {
         const ratioFrom = x => x.source == DEFAULT_SOURCE ? 'guessed ratio' : x.guessed ? `ratio partly guessed` : `ratio from ${x.source}`;
         const from = Object.entries(comp.factors).map(([m, x]) =>
             `${x.count} ${medalLabel(m)} at median ${fmt(x.median)} CC ×${x.factor.toFixed(2)} (${ratioFrom(x)})`).join(' + ');
-        parts.push(`${head}; ${comp.sameCount ? 'with ' : ''}${from}: ${at}`);
+        parts.push(from ? `${head}; ${comp.sameCount ? 'with ' : ''}${from}: ${at}` : `${head}: ${at}`);
+    }
+    else if (comp.medalMode == 'unrated') {
+        // "Only 1 Silver among 20 listings (same sex and age group), 19 without a medal: median ..."
+        const unrated = list.length - comp.ratedCount;
+        parts.push(`${comp.sameCount ? `Only ${comp.sameCount}` : 'No'} ${medalLabel(comp.medal)} among ${list.length} listings (${comp.label}), ${unrated} without a medal: ${at}`);
     }
     else if (list.length) {
         parts.push(`${list.length} listings (${comp.label}), ${at}`);
@@ -588,22 +641,35 @@ function reasonParts(animal, comp, { med, medScore, method, morphName }) {
     return parts;
 }
 
-// Price book maintenance: newest observation per listing id wins; entries
-// older than maxAgeMs are dropped (market listings expire within hours).
-export function mergeListings(book, observed, now, maxAgeMs = 12 * 3600 * 1000) {
+// market listings expire within hours
+export const LISTING_MAX_AGE_MS = 12 * 3600 * 1000;
+// the trade history keeps showing old trades: one stays remembered this long, so seeing it again never makes it new
+const HISTORY_MEMORY_MS = 14 * 24 * 3600 * 1000;
+
+const isHistory = l => l.source == 'history';
+
+// One entry per listing id (the trade's history row wins over its market row); market rows age from their last sighting, history rows from their first.
+export function mergeListings(book, observed, now, maxAgeMs = LISTING_MAX_AGE_MS) {
     const byId = new Map();
     for (const l of book) {
-        if (now - l.seenAt <= maxAgeMs) byId.set(l.source + ':' + l.id, l);
+        const prev = byId.get(l.id);
+        if (now - l.seenAt <= (isHistory(l) ? HISTORY_MEMORY_MS : maxAgeMs) && !(prev && isHistory(prev) && !isHistory(l))) byId.set(l.id, l);
     }
     for (const l of observed) {
         if (l.id == undefined || !(l.price > 0)) continue;
-        const k = l.source + ':' + l.id;
+        const k = l.id;
         const prev = byId.get(k);
-        const next = Object.assign({}, l, { seenAt: now });
+        if (prev && isHistory(prev) && !isHistory(l)) continue;
+        const next = Object.assign({}, l, { seenAt: prev && isHistory(prev) && isHistory(l) ? prev.seenAt : now });
         // a row read before the game filled its medal keeps the known one
         if (next.medal == undefined && prev && prev.medal != undefined) next.medal = prev.medal;
         if (!next.colormorph && prev && prev.colormorph) next.colormorph = prev.colormorph;
         byId.set(k, next);
     }
     return Array.from(byId.values());
+}
+
+// The book's entries that count for prices now.
+export function pricedListings(book, now, maxAgeMs = LISTING_MAX_AGE_MS) {
+    return book.filter(l => now - l.seenAt <= maxAgeMs);
 }

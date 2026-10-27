@@ -1,9 +1,11 @@
 // Pure computations for PZ2QoL. No game imports, so it runs under Node tests.
 //
 // An "animal" here is a plain object:
-// { id, species, gender, maturity, isShoal, isExhibit, isPregnant, isAlpha,
+// { id, species, gender, maturity, age (years), isShoal, isExhibit, isPregnant, isAlpha,
 //   storageTag, price, isCC, genes: { size, longevity, fertility, immunity } }
 // Gene values are 0..1 as the game sends them; missing genes are undefined.
+
+import { speciesRules } from './speciesrules.js';
 
 export const Gender = { Male: 0, Female: 1, Unisex: 2 };
 // The game's EAnimalMaturity (ManagementDataTypes.js): age stage plus
@@ -64,29 +66,8 @@ export function valueIndex(a) {
     return Math.round(score / units * 10) / 10;
 }
 
-// The ★ "best value" only goes to animals that are worth having at all.
-export const BEST_VALUE_MIN_SCORE = 60;
-
-export function isBestValueCandidate(a) {
-    const g = geneScore(a);
-    return g != null && g >= BEST_VALUE_MIN_SCORE && valueIndex(a) != null;
-}
-
-export function scoreTier(score) {
-    if (score == null) {
-        return 'none';
-    }
-    if (score >= 80) {
-        return 'great';
-    }
-    if (score >= 60) {
-        return 'good';
-    }
-    if (score >= 40) {
-        return 'fair';
-    }
-    return 'poor';
-}
+// Judged by its own genes, a Market pick (marketpickcore) is only an animal worth having at all.
+export const PICK_MIN_SCORE = 60;
 
 export function isAdult(a) {
     return a.maturity != undefined && a.maturity != Maturity.Infant;
@@ -98,41 +79,70 @@ export function isFertileAdult(a) {
     return a.maturity == Maturity.YoungAdult || a.maturity == Maturity.Adult || a.maturity == Maturity.Elderly;
 }
 
-// Elderly and no longer fertile: the Franchise market won't take these
-// (developer report); the game's own in-park sell lists "infertile" as a
-// sell preventer (bInfertileSell, RelocateAnimalsPopup).
-export function isInfertileElderly(a) {
-    return a.maturity == Maturity.ElderlyInfertile;
+// Elderly, fertile or not: the Franchise market refuses one, and the
+// refusal can take the game down (pz2-modding animals-and-breeding.md, Trading near elderly).
+export function isElderly(a) {
+    return a.maturity == Maturity.Elderly || a.maturity == Maturity.ElderlyInfertile;
 }
 
-// Why the game would refuse to list this storage animal, from what the row
-// shows. The park's own sell flow blocks juveniles, infertile animals and
-// pregnant ones (RelocateAnimalsPopup g_tSellPreventers: bJuvenileSell,
-// bInfertileSell, bPregnant, bPendingTransport); a storage row can also be
-// on the market already or on its way to the zoo. Dead, boxed, injured,
-// sick, escaped and in-surgery only happen in a park, and "can't be sold"
-// has no row field, so the game's own check still has the last word.
-// Unknown maturity blocks nothing.
-export const SELL_BLOCKERS = {
-    juvenile: 'Juvenile',
-    infertile: 'Infertile',
-    pregnant: 'Pregnant',
+// The server refuses an animal close to elderly while its row still says
+// adult and the game still offers the buttons: a listing 0.8 years short
+// (the refusal took the game down), a sale 1.9 and releases 2.0 and 2.7
+// years short, while it takes a release 3.1 years short. The mod lists,
+// sells and releases none this close.
+export const MARKET_ELDERLY_MARGIN_YEARS = 3;
+
+// Within MARKET_ELDERLY_MARGIN_YEARS of the species' elderly age (an unknown
+// age or species: no).
+export function isNearlyElderly(a) {
+    const rules = speciesRules(normSpecies(a.species));
+    return !!rules && rules.elderlyAge > 0 && typeof a.age === 'number' && rules.elderlyAge - a.age <= MARKET_ELDERLY_MARGIN_YEARS;
+}
+
+// The one rule for whether the mod puts a storage animal on the market
+// (the Sellable chip, the Market desk, the lister), every reason that
+// holds, the desk's first. The game's own sell flow blocks juveniles and
+// pregnant animals (RelocateAnimalsPopup g_tSellPreventers: bJuvenileSell,
+// bPregnant, bPendingTransport); its Market takes a shoal only as a group.
+// An infertile adult is not blocked: the game may refuse it (cautionOf).
+// "Can't be sold" has no row field, so the game's own check still has the
+// last word. Unknown maturity blocks nothing.
+export const SELL_BLOCKERS = Object.freeze({
     listed: 'Already listed',
+    shoal: 'Shoal',
     moving: 'Being moved',
-};
+    pregnant: 'Pregnant',
+    juvenile: 'Juvenile',
+    elderly: 'Elderly and infertile',
+    nearlyElderly: 'Nearly elderly',
+});
 
 export function sellBlockers(a) {
     const out = [];
-    if (a.maturity == Maturity.Infant) out.push('juvenile');
-    if (a.maturity == Maturity.YoungAdultInfertile || a.maturity == Maturity.AdultInfertile || a.maturity == Maturity.ElderlyInfertile) out.push('infertile');
-    if (a.isPregnant) out.push('pregnant');
     if (isOnMarket(a)) out.push('listed');
+    if (a.isShoal) out.push('shoal');
     if (a.isMoving) out.push('moving');
+    if (a.isPregnant) out.push('pregnant');
+    if (a.maturity == Maturity.Infant) out.push('juvenile');
+    if (isElderly(a)) out.push('elderly');
+    else if (isNearlyElderly(a)) out.push('nearlyElderly');
     return out;
 }
 
+export function cautionOf(a) {
+    return a.maturity == Maturity.YoungAdultInfertile || a.maturity == Maturity.AdultInfertile ? 'infertile' : null;
+}
+
+// The row's source text says it came from a Frontier zoo (not a player's):
+// "[AnimalExchange_Source_Description:Value=|Frontier Zoo|]". The game's
+// market refuses those (NoBirthZoo); Quick trade and Quick release take them.
+export function isFrontierZoo(a) {
+    return !!a && typeof a.source === 'string' && /\|\s*Frontier Zoo\s*\|/i.test(a.source);
+}
+
+// The market would take it: nothing blocks it and a player's zoo bred it.
 export function isSellable(a) {
-    return sellBlockers(a).length == 0;
+    return sellBlockers(a).length == 0 && !isFrontierZoo(a);
 }
 
 export function canBreed(a) {
@@ -183,22 +193,58 @@ export function surplusIds(animals, keep) {
     return ids;
 }
 
+export const SURPLUS_KEEP_STEPS = [1, 2, 3, 4];
+
+// The Surplus chip's count: what it shows on, or what its first click would
+// show while off. Listed animals are leaving, so Not listed leaves them out.
+export function surplusChipCount(animals, f) {
+    const pool = f.hideListed ? animals.filter(a => !isOnMarket(a)) : animals;
+    return surplusIds(pool, f.surplusOnly ? f.surplusKeep : SURPLUS_KEEP_STEPS[0]).size;
+}
+
 export const DEFAULT_STORAGE_FILTERS = Object.freeze({
     minScore: 0,
     pregnant: false,
     alpha: false,
-    adults: false,
-    fertileAdults: false, // adults the game marks fertile (no infertile elderly)
-    juveniles: false,
+    adults: 'off', // 'off' | one of ADULT_STAGES
     pairsOnly: false,
     surplusOnly: false,
     surplusKeep: 2,
     hideListed: false, // hide animals already listed on the market
     related: false, // only animals with a close relative in storage (Kin)
-    sellable: 'any', // 'any' | 'yes' (the market would take it) | 'no' (sellBlockers)
+    sellAdvice: false, // false | one of SELL_ADVICE_WAYS: the animals the breeding programme advises letting go (selladvice.js)
+    sellable: 'any', // 'any' | one of TRADE_WAYS | 'no' (no way takes it)
     species: '', // one species only (the Species board's "Storage" button); '' = all
     sort: 'none', // 'none' | 'gene' | 'breeder'
 });
+
+// The Adults chip's stages: all adults (no infants), the adults the game marks
+// fertile (no infertile elderly), or juveniles only
+export const ADULT_STAGES = { all: isAdult, fertile: isFertileAdult, juvenile: a => !isAdult(a) };
+
+// The ways an animal can leave: the market, release, and the rest, which
+// only Quick trade takes (the Sellable and Sell advice chips). How an animal
+// was bought decides it and its row doesn't say (one adopted for cash can't
+// be released), so the game's own verdict from selecting it (v: listercore
+// verdictOf, the Market desk's Check storage) decides where there is one;
+// else a medal means the market and none release. One the game blocks
+// (sellBlockers: listed, pregnant, young, too close to elderly...) goes no way.
+const hasMedal = a => !!a.medal && a.medal !== 'none';
+const unblocked = a => sellBlockers(a).length === 0;
+const forMarket = (a, v) => unblocked(a) && (v ? v.trade : !isFrontierZoo(a) && hasMedal(a));
+const forRelease = (a, v) => unblocked(a) && (v ? v.quickRelease === true : !isFrontierZoo(a) && !hasMedal(a));
+export const TRADE_WAYS = {
+    market: forMarket,
+    release: forRelease,
+    quick: (a, v) => unblocked(a) && !forMarket(a, v) && !forRelease(a, v) && (!v || v.quickTrade === true),
+};
+
+export function tradesSomeWay(a, v) {
+    return Object.values(TRADE_WAYS).some(way => way(a, v));
+}
+
+// The Sell advice chip: every advised animal, or the ones of one way.
+export const SELL_ADVICE_WAYS = Object.assign({ all: () => true }, TRADE_WAYS);
 
 // One spelling for a species id, wherever it comes from: storage and market
 // rows say "[Animal_Leopard_African]", the park "Leopard_African".
@@ -213,20 +259,24 @@ export function isOnMarket(a) {
 }
 
 export function storageFiltersActive(f) {
-    return f.minScore > 0 || f.pregnant || f.alpha || f.adults || f.fertileAdults || f.juveniles || f.pairsOnly || f.surplusOnly || f.hideListed || !!f.related || (!!f.sellable && f.sellable != 'any') || !!f.species || f.sort != 'none';
+    return f.minScore > 0 || f.pregnant || f.alpha || (!!f.adults && f.adults != 'off') || f.pairsOnly || f.surplusOnly || f.hideListed || !!f.related || !!f.sellAdvice || (!!f.sellable && f.sellable != 'any') || !!f.species || f.sort != 'none';
 }
 
 // Returns the animals to show, in display order. Input order is kept
 // unless a sort is chosen. `predicates` holds filters other modules add
 // (key -> animal -> bool, e.g. Kin's `related`); each applies while the
 // flag of the same name is on. A flag without a predicate filters nothing.
-export function applyStorageFilters(animals, f, predicates = {}) {
+// verdictOf(animal) -> the game's verdict on it, or null (SELL_ADVICE_WAYS)
+export function applyStorageFilters(animals, f, predicates = {}, verdictOf = null) {
     // listed animals are leaving: they don't count for pairs or surplus either
     if (f.hideListed) animals = animals.filter(a => !isOnMarket(a));
     const stats = (f.pairsOnly) ? speciesStats(animals) : null;
     const surplus = (f.surplusOnly) ? surplusIds(animals, f.surplusKeep) : null;
     const extra = Object.keys(predicates || {}).filter(k => f[k] && typeof predicates[k] === 'function').map(k => predicates[k]);
     const onlySpecies = f.species ? normSpecies(f.species) : '';
+    const stage = ADULT_STAGES[f.adults];
+    const way = SELL_ADVICE_WAYS[f.sellAdvice];
+    const tradeWay = TRADE_WAYS[f.sellable];
     let out = animals.filter(a => {
         if (onlySpecies && normSpecies(a.species) !== onlySpecies) return false;
         for (const test of extra) {
@@ -238,11 +288,11 @@ export function applyStorageFilters(animals, f, predicates = {}) {
         }
         if (f.pregnant && !a.isPregnant) return false;
         if (f.alpha && !a.isAlpha) return false;
-        if (f.adults && !isAdult(a)) return false;
-        if (f.fertileAdults && !isFertileAdult(a)) return false;
-        if (f.juveniles && isAdult(a)) return false;
-        if (f.sellable == 'yes' && !isSellable(a)) return false;
-        if (f.sellable == 'no' && isSellable(a)) return false;
+        if (stage && !stage(a)) return false;
+        const v = verdictOf ? verdictOf(a) : null;
+        if (way && !way(a, v)) return false;
+        if (tradeWay && !tradeWay(a, v)) return false;
+        if (f.sellable == 'no' && tradesSomeWay(a, v)) return false;
         if (stats) {
             const s = stats.get(a.species || '?');
             if (!s || s.pairs < 1) return false;
@@ -357,14 +407,20 @@ export function applyZooFilters(animals, f) {
         return true;
     });
     if (f.sort == 'kin') {
-        // worst first, relatives next to each other, then the game's order
+        // worst first, relatives next to each other (where the first of them
+        // is in the game's order), then the game's order
         const clusterRank = new Map();
-        for (const a of out) {
+        const clusterFirst = new Map();
+        out.forEach((a, i) => {
+            if (a.kinCluster == null) return;
             const r = KIN_RANK[a.kinSeverity] || 0;
-            if (a.kinCluster != null && r > (clusterRank.get(a.kinCluster) || 0)) clusterRank.set(a.kinCluster, r);
-        }
-        return out.map((a, i) => ({ a, i, c: a.kinCluster != null ? clusterRank.get(a.kinCluster) : (KIN_RANK[a.kinSeverity] || 0) }))
-            .sort((x, y) => y.c - x.c || String(x.a.kinCluster ?? '~' + x.i).localeCompare(String(y.a.kinCluster ?? '~' + y.i)) || x.i - y.i)
+            if (r > (clusterRank.get(a.kinCluster) || 0)) clusterRank.set(a.kinCluster, r);
+            if (!clusterFirst.has(a.kinCluster)) clusterFirst.set(a.kinCluster, i);
+        });
+        return out.map((a, i) => a.kinCluster != null
+            ? { a, i, c: clusterRank.get(a.kinCluster) || 0, at: clusterFirst.get(a.kinCluster) }
+            : { a, i, c: KIN_RANK[a.kinSeverity] || 0, at: i })
+            .sort((x, y) => y.c - x.c || x.at - y.at || x.i - y.i)
             .map(x => x.a);
     }
     if (f.sort != 'none') {

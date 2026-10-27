@@ -1,9 +1,10 @@
 // Browser-harness scenario: the Breeding window (breedwin.js), the small
 // Breeding programme window in the game's info panel spot.
 // Uses the programme scenario's gazelles and Lua fakes. Walks: a game info
-// panel shows a gazelle -> the launcher's third button opens the window on
-// Gazelle and closes the game's panel -> placement (top right, info panel
-// size) -> Habitats: pick in the park (a habitat's own panel, then an
+// panel shows a gazelle -> the launcher's Breeding programme button opens
+// the window on the gazelle's habitat and closes the game's panel ->
+// placement (top right, info panel size) -> Gazelle goes there, then its
+// plan -> Habitats: pick in the park (a habitat's own panel, then an
 // animal's panel) sets habitats aside and closes the game's panel each time;
 // a non-habitat click is refused; Esc stops picking -> remove one ->
 // Programme: numbers, Run (one move at a time through the fake Lua) ->
@@ -11,6 +12,7 @@
 // player opens takes the window's place.
 import { seedZooKin } from './kin_fixture.mjs';
 import { seedProgramme } from './kin_programme.mjs';
+import { dockButton } from './dock.mjs';
 
 export const name = 'breeding window';
 
@@ -93,7 +95,7 @@ export async function hud(page, ctx) {
         await parkClick(page, 'animalInfoPanel', '7001');
         const btnCount = await page.locator('.PZ2QoL_dockBtn').count();
         if (btnCount < 3) problems.push(`${btnCount} launcher buttons`);
-        if (await page.locator('.PZ2QoL_dock').isVisible()) await click(page.locator('.PZ2QoL_dockBtn').nth(2));
+        if (await page.locator('.PZ2QoL_dock').isVisible()) await click(dockButton(page, 'Breeding programme'));
         else await page.evaluate(async url => (await import(url)).openBreedingWindow({}), BW);
         await page.waitForSelector('.PZ2QoL_bw:not(.hidden)', { timeout: 4000 });
         await page.waitForTimeout(600);
@@ -104,24 +106,38 @@ export async function hud(page, ctx) {
             return {
                 right: Math.round(window.innerWidth - r.right), top: Math.round(r.top / rem * 100) / 100, width: Math.round(r.width / rem * 100) / 100,
                 bottom: Math.round((window.innerHeight - r.bottom) / rem * 100) / 100,
-                species: document.querySelector('.PZ2QoL_bwSpeciesName')?.textContent, closes: window.__bwClose,
-                tabs: [...document.querySelectorAll('.PZ2QoL_bwTab')].map(t => t.textContent),
+                title: document.querySelector('.PZ2QoL_bwSpeciesName')?.textContent, closes: window.__bwClose,
+                gazelle: document.querySelector('.PZ2QoL_bwHab[data-species="Gazelle"]')?.className,
             };
         });
         await ctx.shot(page, 'bw_1_open');
         const o = facts.open;
-        if (!/Gazelle/.test(o.species || '')) problems.push(`opened on "${o.species}", not the info panel's gazelle`);
+        if (!/Gazelle Plains/.test(o.title || '')) problems.push(`opened on "${o.title}", not the info panel's gazelle's habitat`);
+        if (!/living/.test(o.gazelle || '')) problems.push(`Gazelle not offered as living there: "${o.gazelle}"`);
         if (o.closes < 1) problems.push('the game\'s info panel was not closed when the window opened');
         if (Math.abs(o.right) > 1) problems.push(`not flush with the right edge (${o.right}px)`);
         if (Math.abs(o.top - 8.33) > 0.2 || Math.abs(o.width - 26.11) > 0.2 || Math.abs(o.bottom - 7.22) > 0.2) problems.push(`not in the info panel's place: ${JSON.stringify(o)}`);
-        if (o.tabs.length !== 3) problems.push(`tabs: ${JSON.stringify(o.tabs)}`);
+
+        // 1b. Gazelle goes there, then its plan
+        await click(page.locator('.PZ2QoL_bwHab[data-species="Gazelle"] .PZ2QoL_bwIconBtn.add'));
+        await page.waitForTimeout(300);
+        await click(page.locator('.PZ2QoL_bwHab[data-species="Gazelle"] .PZ2QoL_kpBtn', { hasText: 'Plan' }));
+        await page.waitForTimeout(600);
+        facts.plan = await page.evaluate(() => ({
+            species: document.querySelector('.PZ2QoL_bwSpeciesName')?.textContent,
+            tabs: [...document.querySelectorAll('.PZ2QoL_bwTab')].map(t => t.textContent),
+        }));
+        await ctx.shot(page, 'bw_1b_plan');
+        if (!/Gazelle/.test(facts.plan.species || '') || /Plains/.test(facts.plan.species || '')) problems.push(`Plan opened "${facts.plan.species}", not Gazelle`);
+        if (facts.plan.tabs.length !== 3) problems.push(`tabs: ${JSON.stringify(facts.plan.tabs)}`);
 
         // 2. Habitats: where they live, what the game allows
         await click(page.locator('.PZ2QoL_bwTab[data-tab="habitats"]'));
         await page.waitForTimeout(400);
         facts.habs = await page.evaluate(() => [...document.querySelectorAll('.PZ2QoL_bwHab')].map(n => `${n.className.replace(/PZ2QoL_bwHab ?/, '')}:${n.getAttribute('data-hab')}`));
         await ctx.shot(page, 'bw_2_habitats');
-        for (const hab of ['9010', '9011']) if (!facts.habs.includes(`living:${hab}`)) problems.push(`${hab} not listed as "lives there now": ${facts.habs}`);
+        if (!facts.habs.includes('assigned:9010')) problems.push(`9010 (set aside in 1b) not listed as set aside: ${facts.habs}`);
+        if (!facts.habs.includes('living:9011')) problems.push(`9011 not listed as "lives there now": ${facts.habs}`);
         if (!facts.habs.includes('suitable:9012')) problems.push(`9012 not suggested: ${facts.habs}`);
 
         // 3. pick in the park: a habitat's panel, an animal's panel, a guest
@@ -195,10 +211,10 @@ export async function hud(page, ctx) {
         for (const sname of ['Optimiser', 'This plan', 'Moves', 'Groups', 'Search']) if (!facts.options.sections.includes(sname)) problems.push(`options: no "${sname}" section (${facts.options.sections})`);
         if (facts.options.rows < 13) problems.push(`options: ${facts.options.rows} rows`);
         if (facts.options.spill) problems.push(`options: ${facts.options.spill} choices spill out of the window`);
-        await click(page.locator('.PZ2QoL_bwSeg[data-relatedPenalty] .PZ2QoL_bwSegItem[data-id="allow"], .PZ2QoL_bwSeg[data-relatedpenalty] .PZ2QoL_bwSegItem[data-id="allow"]'));
+        await click(page.locator('.PZ2QoL_bwSeg[data-structurePenalty] .PZ2QoL_bwSegItem[data-id="soft"], .PZ2QoL_bwSeg[data-structurepenalty] .PZ2QoL_bwSegItem[data-id="soft"]'));
         await page.waitForTimeout(300);
         facts.tune = await page.evaluate(async () => (await import('/js/mods/pz2qol/prefs.js')).getPref('progTune'));
-        if (!facts.tune || facts.tune.relatedPenalty !== 'allow') problems.push(`tuning not kept: ${JSON.stringify(facts.tune)}`);
+        if (!facts.tune || facts.tune.structurePenalty !== 'soft') problems.push(`tuning not kept: ${JSON.stringify(facts.tune)}`);
         facts.toggleText = await page.locator('.PZ2QoL_bwMore').innerText();
         if (!/1 changed/.test(facts.toggleText)) problems.push(`toggle: "${facts.toggleText}"`);
         await click(page.locator('.PZ2QoL_bwSeg[data-engine] .PZ2QoL_bwSegItem[data-id="deep"]'));
@@ -260,7 +276,8 @@ export async function hud(page, ctx) {
         facts.search = await page.evaluate(() => [...document.querySelectorAll('.PZ2QoL_bwPick')].map(n => n.getAttribute('data-species')));
         await ctx.shot(page, 'bw_10_search');
         if (!facts.picker.includes('Gazelle') || !facts.picker.includes('Lion')) problems.push(`picker: ${facts.picker}`);
-        if (JSON.stringify(facts.search) !== JSON.stringify(['Lion'])) problems.push(`search "lio": ${facts.search}`);
+        // every species the game knows is searched: the zoo's own Lion first
+        if (facts.search[0] !== 'Lion' || !facts.search.every(sp => /lio/i.test(sp))) problems.push(`search "lio": ${facts.search}`);
         await click(page.locator('.PZ2QoL_bwPick[data-species="Lion"]'));
         await page.waitForTimeout(400);
         facts.lion = await page.locator('.PZ2QoL_bwSpeciesName').innerText();

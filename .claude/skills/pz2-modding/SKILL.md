@@ -48,9 +48,13 @@ an afterthought:
      the opt-in: there are no "allow in Franchise" switches (developer, 2026-10-16). Franchise is
      the mod's main target, so every feature should work there. **Exception** (developer,
      2026-10-19): the per-species Auto mode (Species board) runs on its schedule by itself, in
-     Franchise too; turning it on for a species is the opt-in. **Second exception** (developer,
+     Franchise too; turning it on for a species is the opt-in (or, with the Kin setting
+     `autoOnAssign`, off by default, setting a habitat aside for it). **Second exception** (developer,
      2026-10-19): "Let out stuck aquarium animals" (`pz2qol.boxrelease.lua`) unboxes animals the
      game boxed and left, hands-free, on by default (Kin setting `releaseBoxed` turns it off);
+     with the Kin setting `overdueBox` (off by default; turning it on is the opt-in) it also
+     boxes and lets out a mother still pregnant at twice her species' pregnancy, once per
+     pregnancy;
    - does one action at a time, each confirmed by the game (or timed out), with a pause after
      each (player-adjustable; moves 0.5 s default and minimum, developer 2026-10-18; listings 1 s
      minimum). The market lister uses that same pause after a server

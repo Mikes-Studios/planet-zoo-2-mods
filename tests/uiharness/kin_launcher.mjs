@@ -3,6 +3,7 @@
 // the alert column, the autosave badge from Lua's state, the autosave card
 // (interval choice and Save now reach Lua, Esc closes), one click opens and a
 // second closes the Species board, and the launcher hides with the column.
+import { dockButton } from './dock.mjs';
 const STATE = { minutes: 5, minMinutes: 2, available: true, inPark: true, armed: true, pending: false, elapsed: 130, retryIn: 0, sinceSave: 130, lastKind: 'mod', lastError: '' };
 
 export async function hud(page, ctx) {
@@ -44,13 +45,14 @@ export async function hud(page, ctx) {
                 if (Math.abs(p.dock.l - p.tools.l) > 2) problems.push(`launcher not aligned with the tools column: ${p.dock.l} vs ${p.tools.l}`);
                 if (p.dock.b > p.tools.t || p.tools.t - p.dock.b > 12) problems.push(`launcher not right above the tools column: bottom ${p.dock.b}, column top ${p.tools.t}`);
                 if (p.alerts && p.dock.t < p.alerts.b) problems.push(`launcher overlaps the alert buttons: top ${p.dock.t}, alerts end ${p.alerts.b}`);
-                if (p.buttons !== 4 && p.buttons !== 3) problems.push(`${p.buttons} launcher buttons`);
+                // Settings, Autosave, Species board, Breeding programme, and the Script profiler in a debug build
+                if (p.buttons !== 5 && p.buttons !== 4) problems.push(`${p.buttons} launcher buttons`);
             }
         }
         if (p.badge !== '5m') problems.push(`autosave badge "${p.badge}"`);
 
         // autosave card
-        await page.locator('.PZ2QoL_dockBtn').nth(0).click();
+        await dockButton(page, 'Autosave').click();
         await page.waitForTimeout(300);
         facts.card = await page.evaluate(() => document.querySelector('.PZ2QoL_asCard')?.innerText || '');
         await ctx.shot(page, 'kl_2_autosave_card');
@@ -66,11 +68,11 @@ export async function hud(page, ctx) {
 
         // one click: Species board, second click closes it
         const open = () => page.evaluate(async () => (await import('/js/mods/pz2qol/kinboard.js')).isSpeciesBoardOpen());
-        await page.locator('.PZ2QoL_dockBtn').nth(1).click();
+        await dockButton(page, 'Species board').click();
         await page.waitForTimeout(1200);
         facts.boardOpen = await open();
         await ctx.shot(page, 'kl_3_board');
-        await page.locator('.PZ2QoL_dockBtn').nth(1).click({ force: true });
+        await dockButton(page, 'Species board').click({ force: true });
         await page.waitForTimeout(500);
         facts.boardAfterSecond = await open();
         if (!facts.boardOpen) problems.push('the launcher did not open the Species board');

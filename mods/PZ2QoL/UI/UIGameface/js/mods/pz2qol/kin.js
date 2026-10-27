@@ -7,9 +7,10 @@
 // nopark, error, ...). Scans are asked for when a kin surface is on screen,
 // on a slow timer for alerts, and shortly after anything that changes
 // breeding (contraception, moves, births are caught by the timer).
-import { buildKinModel, normalizeSnapshot, DEFAULT_CLOSE_KINSHIP } from '/js/mods/pz2qol/kincore.js';
+import { buildKinModel, normalizeSnapshot } from '/js/mods/pz2qol/kincore.js';
+import { DEFAULT_KIN_SETTINGS } from '/js/mods/pz2qol/kinsettings.js';
 import { breadcrumb, reportError } from '/js/mods/pz2qol/errors.js';
-import { getPref, onPrefs, setPref } from '/js/mods/pz2qol/prefs.js';
+import { getPref, onPrefs, updatePref } from '/js/mods/pz2qol/prefs.js';
 
 const SCAN_INTERVAL_MS = 20000;   // background rescan (alerts)
 const ACTIVE_INTERVAL_MS = 6000;  // while a kin surface is on screen
@@ -18,42 +19,7 @@ const CHUNK_TIMEOUT_MS = 10000;
 
 // ---------------------------------------------------------------- settings
 
-export const DEFAULT_KIN_SETTINGS = Object.freeze({
-    enabled: true,        // badges, filters and panels
-    alerts: true,         // "new inbreeding risk" toasts
-    alertKin: false,      // also alert for close kin the game does not flag
-    // growing-up notices (kinlife.js): a note when a young animal will grow
-    // up into a problem (group too big, pushed out, an inbreeding risk); off
-    // by default (developer, 2026-10-18)
-    alertLife: false,
-    // which notices pop up: 'action' (Needs you only, the default) or 'heads'
-    // (Heads-up too); the rest go to the notice log only
-    toastLevel: 'action',
-    closeKinship: DEFAULT_CLOSE_KINSHIP,
-    showCovered: true,    // grey badges for pairs kept apart by contraception
-    // a related pair the game keeps apart by a monogamous pair bond counts as
-    // 'held' (Bonded elsewhere) instead of a risk; off: every such pair is a risk
-    bondHolds: true,
-    // Species board: run a whole staged plan in a Franchise zoo (or when the
-    // mode is unknown). Off by default; single moves are always one click.
-    allowPlansOnline: false,
-    // species names as the game shows them, in the game's language
-    // (speciesnames.js); off: the internal names ("Warthog Common")
-    gameSpeciesNames: true,
-    // kinboxed.js: a Needs-you alert when an animal waits in its transport
-    // box with no destination for boxedAfterS seconds (5/10/30/60); the trade
-    // centre's waiting animals only with boxedIncludeTrade
-    boxedAlert: true,
-    boxedAfterS: 10,
-    boxedIncludeTrade: false,
-    // boxrelease.js / pz2qol.boxrelease.lua: let out aquarium animals the
-    // game boxed and left in the box (hands-free, Franchise too)
-    releaseBoxed: true,
-    // a sick or injured animal the mod sends to the trade centre goes to a
-    // quarantine first (the market refuses it); kinmoves.js, kinquarantine.js
-    quarantineSick: true,
-});
-// Kept in the player's settings (prefs.js: the player save on this device,
+// The settings and their defaults: kinsettings.js. Kept in the player's settings (prefs.js: the player save on this device,
 // every zoo, Franchise included), as the changes from the defaults only, so
 // a later change of a default reaches players who never touched it.
 // (Gameface's localStorage, used before, is lost when the game closes.)
@@ -75,9 +41,16 @@ function loadSettings() {
     return out;
 }
 
-function changedFromDefaults(s) {
-    const out = {};
-    for (const k of Object.keys(DEFAULT_KIN_SETTINGS)) if (s[k] !== DEFAULT_KIN_SETTINGS[k]) out[k] = s[k];
+// The kept settings with patch on top, defaults left out. A merge, not the
+// page's whole copy: replayed on the store's latest (prefs.js), it keeps
+// what the other page changed.
+function mergeChanges(old, patch) {
+    const out = Object.assign({}, old && typeof old === 'object' && !Array.isArray(old) ? old : {});
+    for (const [k, v] of Object.entries(patch)) {
+        if (!(k in DEFAULT_KIN_SETTINGS)) continue;
+        if (v === DEFAULT_KIN_SETTINGS[k]) delete out[k];
+        else out[k] = v;
+    }
     return Object.keys(out).length ? out : undefined;
 }
 
@@ -105,7 +78,7 @@ export function getKinSettings() {
 export function setKinSettings(patch) {
     const next = Object.assign({}, settings, patch);
     try {
-        setPref(PREF_KEY, changedFromDefaults(next));
+        updatePref(PREF_KEY, old => mergeChanges(old, patch));
     }
     catch (e) {
         reportError('mod', 'Kin settings could not be kept', e, { silent: true });
@@ -220,7 +193,7 @@ let storageRaw = null;
 let storageRowsSig = '';
 export function setStorageRows(rows) {
     storageRows = new Map(rows.map(r => [String(r.id), r]));
-    const sig = rows.map(r => [r.id, r.name, r.species, r.sex, r.juv, r.preg].join('|')).join('~');
+    const sig = rows.map(r => [r.id, r.name, r.species, r.sex, r.juv, r.maturity, r.preg].join('|')).join('~');
     if (sig === storageRowsSig) return;
     storageRowsSig = sig;
     if (storageRaw) {
@@ -237,7 +210,7 @@ function mergeStorage(raw) {
     const out = Object.assign({}, raw);
     out.animals = (raw.animals || []).map(a => {
         const row = storageRows.get(String(a.id)) || {};
-        return Object.assign({ name: row.name, species: row.species, sex: row.sex, juv: row.juv, preg: row.preg }, a, { key: String(a.id), hab: '' });
+        return Object.assign({ name: row.name, species: row.species, sex: row.sex, juv: row.juv, maturity: row.maturity, preg: row.preg }, a, { key: String(a.id), hab: '' });
     });
     return out;
 }
@@ -288,10 +261,26 @@ function finishPending() {
     }
 }
 
+// What to try when a Kin action fails, for the Lua side's reasons that name
+// no way on (pz2qol.kin.lua _SendState 'failed').
+const ACTION_NEXT_STEPS = [
+    [/^No park is loaded/, 'Open a zoo and try again.'],
+    [/^Contraception could not be changed/, "The game refused it: try the animal's own contraception toggle in its info panel."],
+    [/^This animal cannot be located|^The camera could not move to the animal/, "Find it with the game's own Locate in the Animals list."],
+    [/^This place cannot be shown|^The camera could not find this place/, "Open it from the game's Habitats or Exhibits list instead."],
+    [/^The heat maps are not available|^The breeding heat map could not be/, "Open the Breeding heat map from the game's own heat map panel."],
+];
+
+function actionFailedText(detail) {
+    const text = String(detail == null ? '' : detail).trim() || 'The game gave no reason.';
+    const step = ACTION_NEXT_STEPS.find(([re]) => re.test(text));
+    return step ? `${text} ${step[1]}` : text;
+}
+
 function onState(state, detail) {
     if ((state === 'same' && detail !== 'storage') || state === 'busy' || state === 'nopark' || state === 'error') finishPending();
     if (state === 'error') reportError('mod', 'Kin scan failed', detail, { silent: true });
-    if (state === 'failed') reportError('mod', 'Kin action failed', detail);
+    if (state === 'failed') reportError('mod', 'Kin action failed', actionFailedText(detail));
     if (state === 'nopark') {
         parkModel = null;
         parkSnapshot = null;
@@ -472,8 +461,8 @@ export function installKin() {
     });
     // a park started or ended (a wildlife reserve and back): the last park
     // snapshot holds the previous load's entity ids, so it is not used again
-    engine.on('PZ2QoL_StoreReset', () => {
-        if (!parkSnapshot) return;
+    engine.on('PZ2QoL_StoreReset', why => {
+        if (why !== 'park' || !parkSnapshot) return;
         breadcrumb('kin_park_reset');
         parkModel = null;
         parkSnapshot = null;

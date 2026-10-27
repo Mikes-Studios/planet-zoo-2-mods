@@ -1,0 +1,166 @@
+"""Write the mod's species rules (speciesrules.js) from the installed game's animals.fdb.
+
+usage (run again after a game update):
+  python tools/gen_species_rules.py --cobra-tools <dir> [--python <exe>] [--game <dir>]
+
+Per habitat species, read-only on the game folder:
+  Social_MatingRules              OnlyLeaderMaleCanMate, OnlyLeaderFemaleCanMate
+  Requirements_GroupComposition   MaxMixedMale/Female (a mixed group), MaxBachelorMale/Female (one sex only)
+  Lifecycle_LongevityData         ElderlyAge, InfertileWhenElderly
+  Lifecycle_FertilityData         GestationYears
+"""
+
+import argparse
+import json
+import os
+import re
+import sqlite3
+import subprocess
+import sys
+import tempfile
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+OUT = os.path.join(ROOT, "mods", "PZ2QoL", "UI", "UIGameface", "js", "mods", "pz2qol", "speciesrules.js")
+DEFAULT_GAME = r"C:\Program Files (x86)\Steam\steamapps\common\Planet Zoo 2"
+CONTENT0_OVL = os.path.join("Win64", "ovldata", "Content0", "Main.ovl")
+STEAM_APP_ID = "3219030"
+# cobra-tools logs a file it could not extract and still exits 0
+FAILED_FILE_LINE = re.compile(r"^ERROR \| (?:An exception occurred while extracting|Could not create)|^WARNING \| (?:Did not create|Creation not implemented)")
+ANSI_COLOUR = re.compile(r"\x1b\[[0-9;]*m")
+
+RULES_SQL = """
+select g.AnimalType, coalesce(m.OnlyLeaderMaleCanMate, 0), coalesce(m.OnlyLeaderFemaleCanMate, 0),
+       g.MaxMixedMale, g.MaxMixedFemale, g.MaxBachelorMale, g.MaxBachelorFemale,
+       l.ElderlyAge, coalesce(l.InfertileWhenElderly, 0), f.GestationYears
+from Requirements_GroupComposition g
+left join Social_MatingRules m on m.AnimalType = g.AnimalType
+left join Lifecycle_LongevityData l on l.AnimalType = g.AnimalType
+left join Lifecycle_FertilityData f on f.AnimalType = g.AnimalType
+order by g.AnimalType
+"""
+
+
+def extract_fdb(args, out_dir):
+    ovl = os.path.join(args.game, CONTENT0_OVL)
+    if not os.path.isfile(ovl):
+        raise SystemExit(f"{ovl} not found. Pass --game with the Planet Zoo 2 install folder.")
+    command = [args.python, os.path.join(args.cobra_tools, "ovl_tool_cmd.py"), "extract", ovl, "-o", out_dir, "--type", ".fdb"]
+    proc = subprocess.run(command, capture_output=True, text=True, check=False)
+    log = ANSI_COLOUR.sub("", proc.stdout + "\n" + proc.stderr)
+    failures = [line for line in log.splitlines() if FAILED_FILE_LINE.match(line)]
+    if proc.returncode or failures:
+        sys.stderr.write(log[-3000:] + "\n")
+        raise SystemExit(
+            f"cobra-tools could not extract animals.fdb (exit code {proc.returncode}). Check that --cobra-tools points at a "
+            "working cobra-tools checkout and --python is the python with its dependencies; if the format is unsupported, "
+            "updating cobra-tools (git pull in its folder) may fix it."
+        )
+    for folder, _, files in os.walk(out_dir):
+        for name in files:
+            if name.lower() == "animals.fdb":
+                return os.path.join(folder, name)
+    raise SystemExit("Content0 Main.ovl has no animals.fdb any more: a game update moved it.")
+
+
+def game_build(game_dir):
+    manifest = os.path.join(os.path.dirname(os.path.dirname(game_dir)), f"appmanifest_{STEAM_APP_ID}.acf")
+    if not os.path.isfile(manifest):
+        return None
+    with open(manifest, encoding="utf-8") as handle:
+        match = re.search(r'"buildid"\s+"(\d+)"', handle.read())
+    return match.group(1) if match else None
+
+
+def read_rules(fdb_path):
+    # sqlite3's context manager only commits; the file must be closed before the temp folder goes
+    connection = sqlite3.connect(fdb_path)
+    try:
+        rows = connection.execute(RULES_SQL).fetchall()
+    except sqlite3.Error as error:
+        raise SystemExit(
+            f"animals.fdb no longer has the tables or columns this script reads ({error}). "
+            f"A game update changed them: check Social_MatingRules, Requirements_GroupComposition, Lifecycle_LongevityData and Lifecycle_FertilityData."
+        ) from error
+    finally:
+        connection.close()
+    rules = {}
+    for (
+        species,
+        leader_male,
+        leader_female,
+        mixed_male,
+        mixed_female,
+        bachelor_male,
+        bachelor_female,
+        elderly_age,
+        infertile_when_elderly,
+        gestation_years,
+    ) in rows:
+        rules[species.lower()] = {
+            "id": species,
+            "leaderMale": leader_male == 1,
+            "leaderFemale": leader_female == 1,
+            "mixedMale": mixed_male,
+            "mixedFemale": mixed_female,
+            "bachelorMale": bachelor_male,
+            "bachelorFemale": bachelor_female,
+            "elderlyAge": elderly_age,
+            "infertileWhenElderly": infertile_when_elderly == 1,
+            "gestationYears": gestation_years,
+        }
+    return rules
+
+
+def write_module(rules, build):
+    lines = [
+        "// Generated by tools/gen_species_rules.py from the game's animals.fdb"
+        f" (Steam build {build or 'unknown'}). Do not edit: run the script again after a game update.",
+        "// Per habitat species (lower case): only the leader of a sex mates (Social_MatingRules), and the most",
+        "// adults of each sex in a mixed group and in a one-sex group (Requirements_GroupComposition), and the",
+        "// age in years it turns elderly and whether it is infertile from then on (Lifecycle_LongevityData), and how",
+        "// long a pregnancy lasts in years (Lifecycle_FertilityData).",
+        "export const SPECIES_RULES = Object.freeze({",
+    ]
+    for species, rule in sorted(rules.items()):
+        fields = {k: v for k, v in rule.items() if k != "id"}
+        lines.append(f"    {species}: Object.freeze({json.dumps(fields, separators=(', ', ': ')).replace(chr(34), '')}),")
+    lines += [
+        "});",
+        "",
+        "// Every habitat species by the game's own id (as the park and Animal Storage name it).",
+        "export const HABITAT_SPECIES = Object.freeze([",
+    ]
+    lines += [f"    {json.dumps(rule['id'])}," for _, rule in sorted(rules.items())]
+    lines += [
+        "]);",
+        "",
+        "export function speciesRules(species) {",
+        "    return SPECIES_RULES[String(species || '').toLowerCase()] || null;",
+        "}",
+        "",
+    ]
+    with open(OUT, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write("\n".join(lines))
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--cobra-tools", required=True)
+    parser.add_argument("--python", default=sys.executable, help="python with cobra-tools' dependencies")
+    parser.add_argument("--game", default=DEFAULT_GAME, help="Planet Zoo 2 install folder")
+    args = parser.parse_args()
+    args.game = os.path.abspath(args.game)
+    args.cobra_tools = os.path.abspath(args.cobra_tools)
+    args.python = os.path.abspath(args.python)
+    with tempfile.TemporaryDirectory() as tmp:
+        rules = read_rules(extract_fdb(args, tmp))
+    write_module(rules, game_build(args.game))
+    print(
+        f"wrote {OUT}: {len(rules)} species, "
+        f"{sum(r['leaderMale'] for r in rules.values())} with a leader male, "
+        f"{sum(r['leaderFemale'] for r in rules.values())} with a leader female"
+    )
+
+
+if __name__ == "__main__":
+    main()

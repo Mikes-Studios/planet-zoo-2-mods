@@ -132,6 +132,14 @@ check(tPatches["editors.shared.baseuimode"] ~= nil, "patches BaseUIMode")
 local tOriginal = {}
 local BaseUIMode = { SetNewMode = function(sMode, tParams) tOriginal[#tOriginal + 1] = { sMode = sMode, tParams = tParams } end }
 tPatches["editors.shared.baseuimode"](BaseUIMode)
+-- the game opens the Move screen for animals from storage from
+-- SelectMode.Advance; only such a request is taken
+check(tPatches["editors.select.selectmode"] ~= nil, "patches SelectMode")
+local SelectMode = { Advance = function(_, fn) if fn then fn() end end }
+tPatches["editors.select.selectmode"](SelectMode)
+local function fromStorage(tParams)
+	SelectMode.Advance({}, function() BaseUIMode.SetNewMode("AnimalMovementMode", tParams) end)
+end
 StorageSend:Attach(oView)
 for _, s in ipairs({ "PZ2QoL_SendArm", "PZ2QoL_SendDisarm", "PZ2QoL_SendHello", "PZ2QoL_SendAck", "PZ2QoL_SendFacts", "PZ2QoL_SendMove" }) do
 	check(oView.tListeners[s] ~= nil, "listener " .. s)
@@ -145,17 +153,17 @@ BaseUIMode.SetNewMode("AnimalMovementMode", { tSelectedAnimals = { 101, 102 } })
 check(#tOriginal == 1, "unarmed: vanilla Move screen")
 
 -- armed (offline zoo): taken, handed to the park page, not opened
-fire("PZ2QoL_SendArm", 2, false)
-BaseUIMode.SetNewMode("AnimalMovementMode", { tSelectedAnimals = { 101, 102 } })
+fire("PZ2QoL_SendArm", 2)
+fromStorage({ tSelectedAnimals = { 101, 102 } })
 check(#tOriginal == 1, "armed: Move screen not opened")
 local tArrived = lastSent("PZ2QoL_SendArrived")
 check(tArrived ~= nil and tArrived.tArgs[2] == "101,102", "arrived ids sent to the page")
-check(tArrived ~= nil and tArrived.tArgs[3] == false, "online consent passed on")
+check(tArrived ~= nil and tArrived.tArgs[3] == "habitat", "the target passed on")
 -- other modes pass through untouched
 BaseUIMode.SetNewMode("Select")
 check(#tOriginal == 2 and tOriginal[2].sMode == "Select", "other modes untouched")
 -- the arm is used once
-BaseUIMode.SetNewMode("AnimalMovementMode", { tSelectedAnimals = { 101 } })
+fromStorage({ tSelectedAnimals = { 101 } })
 check(#tOriginal == 3, "arm used only once")
 -- hello re-sends until acked
 local nBefore = #oView.tSent
@@ -166,36 +174,37 @@ fire("PZ2QoL_SendHello")
 check(#oView.tSent == nBefore + 1, "no re-send after ack")
 
 -- more animals than armed, exhibits, or a disarm: vanilla
-fire("PZ2QoL_SendArm", 1, false)
-BaseUIMode.SetNewMode("AnimalMovementMode", { tSelectedAnimals = { 101, 102 } })
+fire("PZ2QoL_SendArm", 1)
+fromStorage({ tSelectedAnimals = { 101, 102 } })
 check(#tOriginal == 4, "count mismatch: vanilla")
-fire("PZ2QoL_SendArm", 5, false)
-BaseUIMode.SetNewMode("AnimalMovementMode", { tSelectedAnimals = { "g1" }, bIsExhibit = true })
+fire("PZ2QoL_SendArm", 5)
+fromStorage({ tSelectedAnimals = { "g1" }, bIsExhibit = true })
 check(#tOriginal == 5, "exhibit animals: vanilla")
-fire("PZ2QoL_SendArm", 5, false)
+fire("PZ2QoL_SendArm", 5)
 fire("PZ2QoL_SendDisarm")
-BaseUIMode.SetNewMode("AnimalMovementMode", { tSelectedAnimals = { 101 } })
+fromStorage({ tSelectedAnimals = { 101 } })
 check(#tOriginal == 6, "disarmed: vanilla")
 -- an old arm expires
-fire("PZ2QoL_SendArm", 5, false)
+fire("PZ2QoL_SendArm", 5)
 nClock = nClock + 601
-BaseUIMode.SetNewMode("AnimalMovementMode", { tSelectedAnimals = { 101 } })
+fromStorage({ tSelectedAnimals = { 101 } })
 check(#tOriginal == 7, "expired arm: vanilla")
 
--- Franchise: only with the player's consent
+-- the player's own Move request while armed (an info panel, a gate): the game's Move screen
+fire("PZ2QoL_SendArm", 2)
+BaseUIMode.SetNewMode("AnimalMovementMode", { tSelectedAnimals = { 101 } })
+check(#tOriginal == 8, "not from storage: vanilla")
+-- Franchise: the player's click is the go-ahead
 sHubType = "franchise"
-fire("PZ2QoL_SendArm", 2, false)
-BaseUIMode.SetNewMode("AnimalMovementMode", { tSelectedAnimals = { 101 } })
-check(#tOriginal == 8, "franchise without consent: vanilla")
-fire("PZ2QoL_SendArm", 2, true)
-BaseUIMode.SetNewMode("AnimalMovementMode", { tSelectedAnimals = { 101 } })
-check(#tOriginal == 8, "franchise with consent: taken")
+fire("PZ2QoL_SendArm", 2)
+fromStorage({ tSelectedAnimals = { 101 } })
+check(#tOriginal == 8, "franchise: taken")
 sHubType = "offline"
 
 -- no modded park page: vanilla
 package.loaded["pz2qol.hub"].bHUDIsModded = false
-fire("PZ2QoL_SendArm", 2, false)
-BaseUIMode.SetNewMode("AnimalMovementMode", { tSelectedAnimals = { 101 } })
+fire("PZ2QoL_SendArm", 2)
+fromStorage({ tSelectedAnimals = { 101 } })
 check(#tOriginal == 9, "no mod page: vanilla")
 package.loaded["pz2qol.hub"].bHUDIsModded = true
 
@@ -326,35 +335,35 @@ fire("PZ2QoL_FetchHello")
 check(Fetch.tPending == nil, "pending: expires after 10 minutes")
 
 -- 4b. the trade arm: taken in the same zoo, with the target
-fire("PZ2QoL_SendArm", 2, true, "trade")
-BaseUIMode.SetNewMode("AnimalMovementMode", { tSelectedAnimals = { 101, 102 } })
+fire("PZ2QoL_SendArm", 2, "trade")
+fromStorage({ tSelectedAnimals = { 101, 102 } })
 local nOrig = #tOriginal
 tArrived = lastSent("PZ2QoL_SendArrived")
-check(tArrived.tArgs[2] == "101,102" and tArrived.tArgs[4] == "trade", "trade arrival sent with its target")
+check(tArrived.tArgs[2] == "101,102" and tArrived.tArgs[3] == "trade", "trade arrival sent with its target")
 fire("PZ2QoL_SendHello")
-check(lastSent("PZ2QoL_SendArrived").tArgs[4] == "trade", "re-sent on hello with the target")
+check(lastSent("PZ2QoL_SendArrived").tArgs[3] == "trade", "re-sent on hello with the target")
 local nTradeSeq = tArrived.tArgs[1]
 -- another park name: a different zoo, not taken
 sParkName = "Other Park"
-fire("PZ2QoL_SendArm", 2, true, "trade")
-BaseUIMode.SetNewMode("AnimalMovementMode", { tSelectedAnimals = { 101 } })
+fire("PZ2QoL_SendArm", 2, "trade")
+fromStorage({ tSelectedAnimals = { 101 } })
 check(#tOriginal == nOrig + 1, "another zoo: the game's Move screen")
 sParkName = "Okapi Park"
 -- Franchise with no zoo GUID: not taken
 sHubType = "franchise"
 Fetch.tLastClick = { sZoo = nil, sMode = "franchise" }
-fire("PZ2QoL_SendArm", 2, true, "trade")
-BaseUIMode.SetNewMode("AnimalMovementMode", { tSelectedAnimals = { 101 } })
+fire("PZ2QoL_SendArm", 2, "trade")
+fromStorage({ tSelectedAnimals = { 101 } })
 check(#tOriginal == nOrig + 2, "franchise, zoo unknown: the game's Move screen")
 sHubType = "offline"
 -- the Find a habitat arm still says habitat
-fire("PZ2QoL_SendArm", 1, false, "habitat")
-BaseUIMode.SetNewMode("AnimalMovementMode", { tSelectedAnimals = { 9 } })
-check(lastSent("PZ2QoL_SendArrived").tArgs[4] == "habitat", "habitat arm keeps its target")
+fire("PZ2QoL_SendArm", 1, "habitat")
+fromStorage({ tSelectedAnimals = { 9 } })
+check(lastSent("PZ2QoL_SendArrived").tArgs[3] == "habitat", "habitat arm keeps its target")
 -- back to the trade arrivals for the moves below
 Fetch.tLastClick = { sZoo = Kin:_ZooKey(tWorld, 1e9), sMode = "offline" }
-fire("PZ2QoL_SendArm", 2, true, "trade")
-BaseUIMode.SetNewMode("AnimalMovementMode", { tSelectedAnimals = { 101, 102 } })
+fire("PZ2QoL_SendArm", 2, "trade")
+fromStorage({ tSelectedAnimals = { 101, 102 } })
 nTradeSeq = lastSent("PZ2QoL_SendArrived").tArgs[1]
 
 -- 4c. facts carry the trade centre; one arrival per move, the Move screen's sequence

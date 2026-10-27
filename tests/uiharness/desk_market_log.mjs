@@ -47,7 +47,7 @@ export async function frontend(page, ctx) {
         [/ lister engine_state run=\d+ .*phase=running/, 'engine state running'],
         [/ lister engine_result run=\d+ i=\d+ guid=\d+ status=listed price=\d+ hours=\d+/, 'a listed result'],
         [/ lister engine_result run=\d+ i=2 guid=\d+ status=refused kind=refused/, 'the refused result'],
-        [/ desk list_result ok=true engine=true count=\d+/, 'desk list result'],
+        [/ desk list_result ok=true count=\d+/, 'desk list result'],
         [/ lister page_watch key=\S+ req=w1_1/, 'the page watch'],
         [/ lister page_seen key=\S+ req=w1_1 text="?v2\|/, 'what the page reported'],
         [/ desk close /, 'desk close'],
@@ -111,9 +111,9 @@ export async function frontend(page, ctx) {
         if (facts.panel.overlap) problems.push(`log panel header items overlap (${facts.panel.overlap})`);
         if (!/writing to dbg\/trace\.log/.test(facts.panel.info)) problems.push(`log panel state: "${facts.panel.info}"`);
     }
-    // Area filter: lister only
-    await page.locator('.PZ2QoL_dlog .PZ2QoL_dlogBtn', { hasText: /^Area:/ }).click();
-    await page.locator('.PZ2QoL_dlog .PZ2QoL_dlogBtn', { hasText: /^Area:/ }).click();
+    // Area filter: lister only (each click steps to the next area)
+    const areaBtn = page.locator('.PZ2QoL_dlog .PZ2QoL_dlogBtn', { hasText: /^Area:/ });
+    for (let i = 0; i < 20 && !/^Area: lister$/.test((await areaBtn.innerText()).trim()); i++) await areaBtn.click();
     await page.waitForTimeout(150);
     facts.panelLister = await page.evaluate(() => [...document.querySelectorAll('.PZ2QoL_dlog .PZ2QoL_dlogLine')].map(n => n.textContent));
     if (!facts.panelLister.length || facts.panelLister.some(l => !/ lister /.test(l))) problems.push(`Area: lister shows other lines: ${facts.panelLister.slice(0, 2)}`);

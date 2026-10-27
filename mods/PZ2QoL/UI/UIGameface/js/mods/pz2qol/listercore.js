@@ -1,8 +1,7 @@
 // Market desk: the pure parts (Node tests). What each storage animal can
 // do on the market, the desk's rows and counts, the job text the Lua
 // listing engine reads, and what its results mean.
-// See docs/DESIGN-market-desk.md.
-import { Gender, Maturity, breederScore, geneScore, isOnMarket, relevantGenes } from './scores.js';
+import { Gender, Maturity, breederScore, cautionOf, geneScore, isFertileAdult, isFrontierZoo, isNearlyElderly, normSpecies, relevantGenes, sellBlockers } from './scores.js';
 import { medalOf, MEDALS } from './pricing.js';
 
 // Why the engine would not list an animal, from what its row shows. The
@@ -10,14 +9,16 @@ import { medalOf, MEDALS } from './pricing.js';
 // last word; these never reach the server.
 export const BLOCK_WORDS = Object.freeze({
     listed: 'On the market',
+    shoal: 'Shoal: traded as a group',
     moving: 'Being moved',
     pregnant: 'Pregnant: not until she gives birth',
     juvenile: 'Juvenile',
-    elderly: 'Elderly, no longer fertile',
+    elderly: 'Elderly: the market refuses it',
+    nearlyElderly: 'Nearly elderly: the market refuses it',
     noid: 'No id from the game',
     untradeable: "The game won't trade it",
-    // the game's market refuses it, but Quick trade or Quick release takes it
-    // (docs/PLAN-desk-quick-release.md 3.1); never listed, never counted sellable
+    // the game's market refuses it, but Quick trade or Quick release takes it;
+    // never listed, never counted sellable
     quick: 'Quick trade',
     // the game offers only Rehome for it (no quick buttons, AnimalStorageInfoPanel.js:321)
     rehome: 'Rehome only',
@@ -32,27 +33,26 @@ export const NOID_TEXT = "The game gave no id for this animal; it can't be liste
 // the debug log; the Lua engine has the same text).
 export const PREGNANT_TEXT = "Pregnant: the market won't take it until she gives birth.";
 
+export const SHOAL_TEXT = "Shoals are traded as a group in the game's own Market; the mod lists single animals.";
+
 // Shown but not blocked: the game may refuse these (its rule is native).
 export const CAUTION_WORDS = Object.freeze({
     infertile: 'Infertile: the game may refuse',
 });
 
-// A pregnant animal is never listed (the game's own sell flow blocks it:
-// RelocateAnimalsPopup g_tSellPreventers bPregnant; storage rows show
-// isPregnant, AnimalMarketAndStorageSchema.js).
+// The desk's reason for not listing an animal (scores.js sellBlockers).
 export function blockOf(a) {
-    if (isOnMarket(a)) return 'listed';
-    if (a.isMoving) return 'moving';
-    if (a.isPregnant) return 'pregnant';
-    if (a.maturity == Maturity.Infant) return 'juvenile';
-    if (a.maturity == Maturity.ElderlyInfertile) return 'elderly';
-    return null;
+    return sellBlockers(a)[0] || null;
 }
 
-export function cautionOf(a) {
-    if (a.maturity == Maturity.YoungAdultInfertile || a.maturity == Maturity.AdultInfertile) return 'infertile';
-    return null;
+// The Market lister's: blockOf, or 'quick' for one from a Frontier zoo,
+// which the market never takes (the desk checks it again per animal).
+export function listerBlockOf(a) {
+    return blockOf(a) || (isFrontierZoo(a) ? 'quick' : null);
 }
+
+// What to do with an animal from a Frontier zoo instead of listing it.
+export const FRONTIER_TEXT = "It came from a Frontier zoo, adopted for cash: the game won't put it on the market or release it to the wild, so it earns no CC. Keep it to breed (its young can be sold), or Quick trade it for cash from the Market desk.";
 
 // "7h 20m left", "45m left", "<1m left"
 export function timeLeftText(seconds) {
@@ -69,8 +69,9 @@ export const RESULT_WORDS = Object.freeze({
     listed: 'already on the market',
     moving: 'being moved',
     pregnant: "pregnant: the market won't take it until she gives birth",
-    elderly: 'elderly and no longer fertile',
+    elderly: 'elderly (the market refuses it)',
     juvenile: 'juvenile',
+    shoal: 'a shoal (the game trades shoals as a group)',
     untradeable: "the game won't trade it",
     ambiguous: 'no id from the game and another animal looks the same',
     unselectable: "the game didn't select it",
@@ -82,7 +83,7 @@ export const RESULT_WORDS = Object.freeze({
     stopped: 'stopped (it may still appear on the market)',
     error: 'an error in the mod',
     closed: 'Animal Storage was closed',
-    // quick trade / release (docs/PLAN-desk-quick-release.md 4.3)
+    // quick trade / release
     notallowed: "the game doesn't allow it now",
     nopage: 'no fresh report from the page (nothing sent)',
     rehome: 'the game offers only Rehome for it',
@@ -131,36 +132,40 @@ export function deskRows(rows, guids, advise, failed, gameBlocked = null, verdic
     const out = [];
     for (const a of rows) {
         if (!a || a.id == undefined || a.isShoal) continue;
-        const guid = guids && guids.get(a.key);
-        const advice = advise ? advise(a) : { price: 0, confidence: 'none', reason: '' };
+        const guid = (guids && guids.get(a.key)) || null;
         const verdict = guid && verdicts ? verdicts.get(guid) || null : null;
-        let vb = verdictBlock(verdict);
-        // not checked yet, but the storage list says it came from a Frontier
-        // zoo: Quick trade only (proven 4/4 = NoBirthZoo, Y: 2026-10-18);
-        // labelled as such, and each animal is checked again before it goes
-        const pre = !verdict && !blockOf(a) && isFrontierZoo(a);
-        if (pre) vb = { cat: 'quick', block: 'quick', detail: '' };
-        const row = {
+        out.push(Object.assign({
             id: guid ? 'g' + guid : 'k' + a.key + '|' + rowFingerprint(a),
-            guid: guid || null,
+            guid,
             key: a.key,
             a,
             species: a.species,
             score: geneScore(a),
             medal: medalOf(a),
-            block: blockOf(a) || (!guid && failed && failed.has(a.key) ? 'noid' : null) || vb.block || (guid && !verdict && gameBlocked && gameBlocked.has(guid) ? 'untradeable' : null),
-            blockDetail: undefined,
-            cat: vb.cat,
-            pre,
-            verdict,
             caution: cautionOf(a),
-            advice,
-        };
-        if (row.block === 'untradeable') row.blockDetail = vb.block === 'untradeable' ? vb.detail : gameBlocked.get(guid);
-        else if (row.block && row.block === vb.block) row.blockDetail = vb.detail;
-        out.push(row);
+            advice: advise ? advise(a) : { price: 0, confidence: 'none', reason: '' },
+        }, rowBlock(a, { guid, noid: !!(failed && failed.has(a.key)), verdict, gameBlocked })));
     }
     return out;
+}
+
+// A desk row's { block, blockDetail, cat, pre, verdict }: its own block first
+// (on the market, moving...), then no id, then what the game said about it
+// (its verdict, else a refusal in gameBlocked). For new rows, and again
+// whenever a verdict or a refusal lands between reads.
+export function rowBlock(a, { guid = null, noid = false, verdict = null, gameBlocked = null } = {}) {
+    const own = blockOf(a);
+    const refusal = guid && !verdict && gameBlocked && gameBlocked.has(guid) ? gameBlocked.get(guid) : null;
+    // not checked yet, but the storage list says it came from a Frontier
+    // zoo: Quick trade only (proven 4/4 = NoBirthZoo, Y: 2026-10-18);
+    // labelled as such, and each animal is checked again before it goes
+    const pre = !verdict && !own && refusal == null && isFrontierZoo(a);
+    const vb = pre ? { cat: 'quick', block: 'quick', detail: '' } : verdictBlock(verdict);
+    const block = own || (!guid && noid ? 'noid' : null) || vb.block || (refusal != null ? 'untradeable' : null);
+    let blockDetail;
+    if (block === 'untradeable') blockDetail = vb.block === 'untradeable' ? vb.detail : refusal;
+    else if (block && block === vb.block) blockDetail = vb.detail;
+    return { block, blockDetail, cat: vb.cat, pre, verdict };
 }
 
 // Species with their counts: total, sellable now, Quick trade only, on the market.
@@ -180,7 +185,7 @@ export function speciesCounts(rows) {
 }
 
 // ------------------------------------------------- categories (Quick trade)
-// docs/PLAN-desk-quick-release.md 3.1. The game gives Trade, Quick trade,
+// The game gives Trade, Quick trade,
 // Quick release and Rehome only for the selected animal (actions context),
 // so the desk knows them per animal once a listing run or Check storage has
 // selected it: its verdict (Lua's verdictOf, sent with each run result).
@@ -256,18 +261,17 @@ export function quickOffers(v, fmt, tr) {
 }
 
 // ------------------------------------------------------- Check storage
-// docs/PLAN-desk-quick-release.md 3.2: the engine's 'check' job selects each
-// animal and records its verdict; it never sends anything. Its pace: 150 ms
-// between selects unless Phase 0a shows that a select sends a server request
-// (trace: lister select_net busy=true / lister_select_net_busy), then the
-// desk's own pace. Set SELECT_SENDS_REQUEST from that trace.
+// The engine's 'check' job selects each animal and records its verdict; it
+// never sends anything. Its pace: 150 ms between selects, the desk's own pace
+// if a select turns out to send a server request (trace: lister select_net
+// busy=true / lister_select_net_busy; in game 2026-10-18 it sent nothing).
 export const CHECK_PACE_MS = 150;
 export const SELECT_SENDS_REQUEST = false;
 // about how long one animal takes (clear, select, the game's data, settle)
 export const CHECK_ANIMAL_MS = 1800;
 
-export function checkPaceMs(deskPaceMs = 3000) {
-    return SELECT_SENDS_REQUEST ? Math.max(1000, Math.round(deskPaceMs)) : CHECK_PACE_MS;
+export function checkPaceMs(deskPaceMs) {
+    return SELECT_SENDS_REQUEST ? Math.round(deskPaceMs) : CHECK_PACE_MS;
 }
 
 // The animals Check storage takes: of the shown species (null: all), with an
@@ -277,17 +281,11 @@ export function uncheckedRows(rows, species = null) {
 }
 
 // ------------------------------------------- Quick trade / Quick release
-// docs/PLAN-desk-quick-release.md 4 (Phase 2). Proven on Y: 2026-10-18
-// (Phase 0): the numeric prices equal the value texts (50/50), a select
-// sends nothing, the row leaves storage ~0.33 s after the game's call.
+// Proven in game on 2026-10-18: the numeric prices equal the value texts
+// (50/50), a select sends nothing, the row leaves storage ~0.33 s after the
+// game's call.
 
-// The row's source text says it came from a Frontier zoo (not a player's):
-// "[AnimalExchange_Source_Description:Value=|Frontier Zoo|]".
-export function isFrontierZoo(a) {
-    return !!a && typeof a.source === 'string' && /\|\s*Frontier Zoo\s*\|/i.test(a.source);
-}
-
-// Phase 0a: quickTradePrice / quickReleasePrice matched the value texts, so
+// quickTradePrice / quickReleasePrice match the value texts in game, so
 // the sheet's total is exact (else it would say ≈).
 export const QUICK_PRICES_MATCH = true;
 
@@ -298,7 +296,7 @@ export const QUICK_MODES = Object.freeze({
         header: "QUICK RELEASE · releases to the wild for CC at once · can't be undone", confirm: 'Release now' }),
 });
 
-// The live acceptance (plan 5): until one run of exactly one animal has
+// The live acceptance: until one run of exactly one animal has
 // been confirmed gone in a mode, that mode takes one animal at a time.
 export const FIRST_TEXT = Object.freeze({
     quicktrade: 'First quick trade: one animal, to check it works',
@@ -333,6 +331,8 @@ export function quickEligible(r, mode) {
     if (!r.guid) return { ok: false, why: "The game gave no id for it; it can't be sent from the desk." };
     if (r.block === 'listed') return { ok: false, why: 'On the market.' };
     if (r.block === 'moving') return { ok: false, why: 'Being moved.' };
+    // the game offers the quick buttons up to elderly, the server refuses them sooner
+    if (isNearlyElderly(r.a)) return { ok: false, why: 'Within three years of elderly: the server refuses it.' };
     if (r.verdict) {
         if (r.verdict.rehome === true) return { ok: false, why: 'The game offers only Rehome for it.' };
         if (r.verdict[m.flag] !== true) {
@@ -391,9 +391,9 @@ export function quickSheet(rows, mode, { fmt = n => String(n), nameOf = r => Str
 
 // The engine's quick job: "v1 <paceMs> quicktrade|release", then
 // "<guid> <key> - default" per animal, exactly the rows given (frozen).
-export function encodeQuickJob(rows, { mode = 'quicktrade', paceMs = 3000 } = {}) {
+export function encodeQuickJob(rows, { mode = 'quicktrade', paceMs }) {
     if (!QUICK_MODES[mode]) return { text: '', items: [] };
-    const lines = [`v1 ${Math.max(1000, Math.round(paceMs))} ${mode}`];
+    const lines = [`v1 ${Math.round(paceMs)} ${mode}`];
     const items = [];
     for (const r of rows) {
         if (!r.guid || !GUID_TOKEN.test(r.guid) || !/^[A-Za-z0-9_]+$/.test(String(r.key))) continue;
@@ -596,10 +596,6 @@ export function ageOf(a) {
     return AGE_OF[a.maturity] || null;
 }
 
-function isFertile(a) {
-    return a.maturity == Maturity.YoungAdult || a.maturity == Maturity.Adult || a.maturity == Maturity.Elderly;
-}
-
 function pct(v) {
     return typeof v === 'number' && isFinite(v) ? Math.round(v * 100) : null;
 }
@@ -619,7 +615,7 @@ export function basisScore(r, basis = 'overall') {
 
 // Row ids beyond the best `keep` of each species and sex, best first by the
 // basis (unknown scores last). Only animals the desk could list count: one on
-// the market, a juvenile, an elderly infertile or a moving animal never takes
+// the market, a juvenile, an elderly or a moving animal never takes
 // a kept place (else the best adult could be the one sold). These are the
 // cull candidates.
 export function beyondBest(rows, keep, basis = 'overall') {
@@ -656,8 +652,8 @@ export function filterRows(rows, filters = DESK_FILTERS, ctx = {}) {
         if (f.sex === 'male' && a.gender != Gender.Male) return false;
         if (f.sex === 'female' && a.gender != Gender.Female) return false;
         if (f.ages.length && !f.ages.includes(ageOf(a))) return false;
-        if (f.fertile === 'yes' && !isFertile(a)) return false;
-        if (f.fertile === 'no' && isFertile(a)) return false;
+        if (f.fertile === 'yes' && !isFertileAdult(a)) return false;
+        if (f.fertile === 'no' && isFertileAdult(a)) return false;
         if (f.medals.length && !(r.medal != undefined && f.medals.includes(r.medal))) return false;
         if (f.state === 'sellable' && r.block) return false;
         if (f.state === 'quick' && r.block !== 'quick') return false;
@@ -689,6 +685,25 @@ export function filterRows(rows, filters = DESK_FILTERS, ctx = {}) {
     });
 }
 
+// The ticked rows the filters show: what List and the quick sheet take.
+export function tickedRows(rows, chosen, filters = DESK_FILTERS, ctx = {}) {
+    return filterRows(rows, filters, ctx).filter(r => chosen.has(r.id));
+}
+
+// The ticks after a read: a row id changes when its GUID arrives (or goes),
+// so a tick follows the row key and what the row holds, never from one GUID
+// to another. Ticks of animals no longer in storage go.
+export function carryTicks(prevRows, rows, chosen) {
+    const ticked = new Map();
+    for (const r of prevRows) if (chosen.has(r.id)) ticked.set(`${r.key}|${rowFingerprint(r.a)}`, r);
+    const out = new Set();
+    for (const r of rows) {
+        const was = chosen.has(r.id) ? r : ticked.get(`${r.key}|${rowFingerprint(r.a)}`);
+        if (was && (was === r || !was.guid || !r.guid)) out.add(r.id);
+    }
+    return out;
+}
+
 // What "Tick all" takes: sellable now and not tagged Keep in storage (unless
 // the player filtered to Keep-tagged animals on purpose). A Quick trade row
 // is not listable (its block says so); in List mode it is never ticked.
@@ -712,23 +727,29 @@ export function sortRows(rows, sort = 'best', basis = 'overall') {
     return rows.slice().sort((x, y) => (!!x.block - !!y.block) || by(x, y) || name(x).localeCompare(name(y)));
 }
 
-// The engine's job text (docs/DESIGN-market-desk.md): "v1 <paceMs>", then
-// "<guid> <key> <price|-> <hours>" per animal. Rows without a GUID or with
-// a block are left out (the engine would skip them anyway).
-// onRefused: 'leave' | 'quicktrade' | 'release' (the desk's option, see
-// REFUSED_OPTIONS); refusedMax: at most this many quick actions after a
-// refusal (Quick release before its first confirmed run: 1).
-export function encodeJob(rows, { paceMs = 3000, hours = 'max', onRefused = 'leave', refusedMax = null } = {}) {
-    const head = [`v1 ${Math.max(1000, Math.round(paceMs))}`];
+// The engine's job text: "v1 <paceMs>", then "<guid> <key> <price|-> <hours>"
+// per animal; rows without a GUID or with a block are left out (the engine
+// would skip them anyway). onRefused: REFUSED_OPTIONS; refusedMax: at most
+// this many quick actions after a refusal (Quick release before its first
+// confirmed run: 1). Each price is the one before the player's offset: the
+// engine caps it (or the game's default, for '-') to the animal's limits,
+// then applies offset=<percent>.
+export function encodeJob(rows, { paceMs, hours = 'max', onRefused = 'leave', refusedMax = null, offset = 0 }) {
+    const head = [`v1 ${Math.round(paceMs)}`];
+    // options follow the mode word (Lua's parseJob reads the first word as the mode)
+    const opts = [];
     if (onRefused === 'quicktrade' || onRefused === 'release') {
-        head.push('list', `onrefused=${onRefused}`);
-        if (Number.isFinite(refusedMax) && refusedMax >= 0) head.push(`refusedmax=${Math.floor(refusedMax)}`);
+        opts.push(`onrefused=${onRefused}`);
+        if (Number.isFinite(refusedMax) && refusedMax >= 0) opts.push(`refusedmax=${Math.floor(refusedMax)}`);
     }
+    const pct = Math.round((Number(offset) || 0) * 100);
+    if (pct) opts.push(`offset=${pct}`);
+    if (opts.length) head.push('list', ...opts);
     const lines = [head.join(' ')];
     const items = [];
     for (const r of rows) {
         if (!r.guid || r.block || !GUID_TOKEN.test(r.guid) || !/^[A-Za-z0-9_]+$/.test(String(r.key))) continue;
-        const p = r.advice && r.advice.price > 0 ? String(Math.round(r.advice.price)) : '-';
+        const p = r.advice && r.advice.basePrice > 0 ? String(Math.round(r.advice.basePrice)) : '-';
         const hr = hours === 'max' || hours === 'default' ? hours : String(Math.max(1, Math.round(hours)));
         lines.push(`${r.guid} ${r.key} ${p} ${hr}`);
         items.push(r);
@@ -738,8 +759,9 @@ export function encodeJob(rows, { paceMs = 3000, hours = 'max', onRefused = 'lea
 
 // "When the server refuses a listing" (developer, 2026-10-18: the same
 // animals fail to list in vanilla too, but can be quick-traded). A
-// player-wide pref (prefs.js 'deskRefused'); Leave it by default.
-export const REFUSED_OPTIONS = Object.freeze({ leave: 'Leave it', quicktrade: 'Quick trade it', release: 'Quick release it' });
+// player-wide pref (prefs.js 'deskRefused'); Leave it by default. The
+// labels are the desk's If refused buttons.
+export const REFUSED_OPTIONS = Object.freeze({ leave: 'Leave it', quicktrade: 'Quick trade', release: 'Quick release' });
 
 export function normalizeRefused(v) {
     return REFUSED_OPTIONS[v] ? v : 'leave';
@@ -754,15 +776,19 @@ export function refusedNote(opt, { limitOne = false } = {}) {
     return `Refused ones: ${what} at once (permanent)${limitOne ? ', the first one only' : ''}.`;
 }
 
+export const UNANSWERED_TEXT = "the game didn't answer in time when asked for their ids; try again";
+
 // What a job left out of the animals asked for, for the player:
 // "Listing 3 of 39: 36 couldn't be identified by the game" (and the others
 // that can't be listed now); '' when the job holds them all.
-//   inJob: animals in the job; asked: animals ticked; noid: of those, no id
-export function partialJobText({ inJob = 0, asked = 0, noid = 0 } = {}) {
+//   inJob: animals in the job; asked: animals ticked; noid: of those, no id;
+//   unanswered: of those, in a batch the game did not answer in time
+export function partialJobText({ inJob = 0, asked = 0, noid = 0, unanswered = 0 } = {}) {
     if (!(asked > inJob)) return '';
-    const other = Math.max(0, asked - inJob - noid);
+    const other = Math.max(0, asked - inJob - noid - unanswered);
     const why = [];
     if (noid > 0) why.push(`${noid} couldn't be identified by the game`);
+    if (unanswered > 0) why.push(`${unanswered} without an answer from the game in time (try again)`);
     if (other > 0) why.push(`${other} can't be listed now`);
     return `Listing ${inJob} of ${asked}${why.length ? `: ${why.join(', ')}` : ''}`;
 }
@@ -772,6 +798,13 @@ export function normalizeState(s) {
     if (!s || typeof s !== 'object') return null;
     const results = Array.isArray(s.results) ? s.results.filter(x => x && x.guid != undefined).map(x => Object.assign({ status: 'pending', kind: '', detail: '' }, x, { guid: String(x.guid) })) : [];
     return Object.assign({ run: 0, phase: 'running', mode: 'list', total: results.length, index: 0, step: '', waited: 0, message: '' }, s, { results });
+}
+
+// A row's result as the table shows it: once a run has ended, an animal it
+// never reached is 'notstarted', not queued (a check leaves the row as it was).
+export function shownResult(state, res) {
+    if (!res || res.status !== 'pending' || !state || state.phase === 'running') return res;
+    return state.mode === 'check' ? undefined : Object.assign({}, res, { status: 'notstarted' });
 }
 
 // Counts of a run's results.
@@ -788,7 +821,7 @@ export function tally(state) {
 }
 
 // "listed 7 of 10 (≈ 9,800 CC); skipped 2 (2 refused by the server); 1 not started"
-// note: what the page left out of the job ({ noid, asked }, listAnimals):
+// note: what the page left out of the job ({ noid, unanswered, asked }, listAnimals):
 // "…; 36 of the 39 ticked couldn't be identified by the game (not in the job)"
 export function summaryText(state, fmt = n => String(n), note = null) {
     const t = tally(state);
@@ -808,6 +841,7 @@ export function summaryText(state, fmt = n => String(n), note = null) {
     }
     if (t.pending) parts.push(`${t.pending} not started`);
     if (note && note.noid > 0) parts.push(`${note.noid}${note.asked ? ` of the ${note.asked} ticked` : ''} couldn't be identified by the game (not in the job)`);
+    if (note && note.unanswered > 0) parts.push(`${note.unanswered} not in the job: ${UNANSWERED_TEXT}`);
     const s = parts.join('; ');
     return s.charAt(0).toUpperCase() + s.slice(1) + '.';
 }
@@ -870,13 +904,24 @@ export function reasonText(kind, detail, tr = s => s) {
     return safe(detail) || String(detail);
 }
 
+const plainWords = s => String(s).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
+// A result in words, with its detail only when the detail says more than
+// the words ("already on the market", not "already on the market: Already
+// on the market."). detailKind: how to read the detail (reasonText).
+export function resultText(res, tr = s => s, detailKind = res.kind) {
+    const words = RESULT_WORDS[res.kind] || res.status;
+    const detail = res.detail ? reasonText(detailKind, res.detail, tr) : '';
+    return detail && !plainWords(words).includes(plainWords(detail)) ? `${words}: ${detail}` : words;
+}
+
 export function retryGuids(state) {
     // a check run lists nothing, and a quick run is never retried by a click
     if (!state || (state.mode && state.mode !== 'list')) return [];
     return state.results.filter(r => r.status === 'pending' || (r.status !== 'listed' && RETRY_KINDS.has(r.kind))).map(r => r.guid);
 }
 
-// Page-assisted reads for the engine (docs/DESIGN-market-desk.md): while it
+// Page-assisted reads for the engine: while it
 // selects an animal, the page reads the selection, tradeAllowed and the
 // listing limits from its DataStore (Lua's own reads never saw the
 // selection in game, Y: 2026-10-17) and reports them in plain text (the
@@ -927,90 +972,52 @@ export function readSeen(key, read) {
     for (const p of SEEN_QUICK.prices) quick[p] = num(r(SEEN_CONTEXTS.limits, p));
     return {
         key: String(key), sel, allowed: typeof allowed === 'boolean' ? allowed : null, reason: typeof reason === 'string' ? reason : '', limits, quick,
-        // Phase 0a (docs/PLAN-desk-quick-release.md 2): does a select send a
-        // request; does the row's source or the releaseable filter classify it
+        // does a select send a request; does the row's source or the
+        // releaseable filter classify it
         net: { connecting: bool(r(SEEN_CONTEXTS.network, 'connectingAction')), loading: bool(r(SEEN_CONTEXTS.network, 'loadingItems')) },
         releaseable: bool(r(SEEN_CONTEXTS.filters, 'isReleaseable')),
         source: text(r(SEEN_CONTEXTS.list.concat(String(key)), 'source')),
     };
 }
 
-// The page report v2 (pz2qol.lister.lua parseSeen reads v1 and v2): every
-// text field percent-encoded (encodeURIComponent: no raw "|" or "," left), so
-// the reasons (nested loc tokens with "|" in them) can sit anywhere.
-// "v2|<key>|<sel,...|?>|<allowed 1|0|->|<pmin,pmax,pdef,hmin,hmax,hdef>|<reason%>|
-//  <quickTrade>|<its reason%>|<its value%>|<quickRelease>|<its reason%>|<its value%>|
-//  <rehome>|<quickTradePrice,quickReleasePrice>|<connecting,loading>|<isReleaseable>|<source%>"
+// The page report v2 for pz2qol.lister.lua parseSeen: these fields in this
+// order, "|" between them. Text fields are percent-encoded
+// (encodeURIComponent: no raw "|" or "," left, so the reasons, nested loc
+// tokens with "|" in them, can sit anywhere); flags are 1, 0 or - (unknown),
+// numbers a number or -; limits and the two pairs are comma lists.
+export const SEEN_FIELDS = Object.freeze(['version', 'key', 'selection', 'allowed', 'limits', 'reason',
+    'quickTrade', 'quickTradeReason', 'quickTradeValue', 'quickRelease', 'quickReleaseReason', 'quickReleaseValue',
+    'rehome', 'quickPrices', 'net', 'releaseable', 'source', 'page']);
+
 export function encodeSeen(s) {
     const token = x => String(x).replace(/[|,\s]/g, '');
     const flag = v => (v === true ? '1' : v === false ? '0' : '-');
     const n = v => (typeof v === 'number' && Number.isFinite(v) ? String(v) : '-');
     const pct = v => encodeURIComponent(String(v == undefined ? '' : v));
-    const sel = Array.isArray(s.sel) ? s.sel.map(token).filter(Boolean).join(',') : '?';
-    const lim = SEEN_LIMITS.map(p => n(s.limits ? s.limits[p] : null)).join(',');
     const q = s.quick || {};
     const net = s.net || {};
-    return ['v2', token(s.key), sel, flag(s.allowed), lim, pct(s.reason),
-        flag(q.quickTradeAllowed), pct(q.quickTradeDisallowedReason), pct(q.quickTradeValue),
-        flag(q.quickReleaseAllowed), pct(q.quickReleaseDisallowedReason), pct(q.quickReleaseValue),
-        flag(q.rehomeAllowed), `${n(q.quickTradePrice)},${n(q.quickReleasePrice)}`,
-        `${flag(net.connecting)},${flag(net.loading)}`, flag(s.releaseable), pct(s.source), token(s.page || '')].join('|');
-}
-
-// What Lua's parseSeen makes of a report (v1 or v2), for the tests and the
-// harness: { v, key, sel, allowed, reason, limits, quick?, net?, releaseable?, source? } or null.
-export function decodeSeen(text) {
-    const s = String(text == undefined ? '' : text);
-    const flag = v => (v === '1' ? true : v === '0' ? false : null);
-    const nums = v => String(v || '').split(',').map(x => (x === '' || x === '-' || !Number.isFinite(Number(x)) ? null : Number(x)));
-    const sel = v => (v === '?' ? null : String(v || '').split(',').filter(Boolean));
-    const limits = v => {
-        const n = nums(v);
-        return Object.fromEntries(SEEN_LIMITS.map((p, i) => [p, n[i] ?? null]));
+    const field = {
+        version: 'v2',
+        key: token(s.key),
+        selection: Array.isArray(s.sel) ? s.sel.map(token).filter(Boolean).join(',') : '?',
+        allowed: flag(s.allowed),
+        limits: SEEN_LIMITS.map(p => n(s.limits ? s.limits[p] : null)).join(','),
+        reason: pct(s.reason),
+        quickTrade: flag(q.quickTradeAllowed),
+        quickTradeReason: pct(q.quickTradeDisallowedReason),
+        quickTradeValue: pct(q.quickTradeValue),
+        quickRelease: flag(q.quickReleaseAllowed),
+        quickReleaseReason: pct(q.quickReleaseDisallowedReason),
+        quickReleaseValue: pct(q.quickReleaseValue),
+        rehome: flag(q.rehomeAllowed),
+        quickPrices: `${n(q.quickTradePrice)},${n(q.quickReleasePrice)}`,
+        net: `${flag(net.connecting)},${flag(net.loading)}`,
+        releaseable: flag(s.releaseable),
+        source: pct(s.source),
+        page: token(s.page || ''),
     };
-    const unpct = v => {
-        try {
-            return decodeURIComponent(v || '');
-        }
-        catch (e) {
-            return String(v || '');
-        }
-    };
-    if (s.startsWith('v2|')) {
-        const t = s.slice(3).split('|');
-        if (t.length < 16 || !t[0]) return null;
-        const p = nums(t[12]);
-        const net = String(t[13] || '').split(',');
-        return {
-            v: 2, key: t[0], sel: sel(t[1]), allowed: flag(t[2]), limits: limits(t[3]), reason: unpct(t[4]),
-            quick: {
-                quickTradeAllowed: flag(t[5]), quickTradeDisallowedReason: unpct(t[6]), quickTradeValue: unpct(t[7]),
-                quickReleaseAllowed: flag(t[8]), quickReleaseDisallowedReason: unpct(t[9]), quickReleaseValue: unpct(t[10]),
-                rehomeAllowed: flag(t[11]), quickTradePrice: p[0] ?? null, quickReleasePrice: p[1] ?? null,
-            },
-            net: { connecting: flag(net[0]), loading: flag(net[1]) }, releaseable: flag(t[14]), source: unpct(t[15]),
-            page: t[16] || null,
-        };
-    }
-    const m = /^v1\|([^|]*)\|([^|]*)\|([^|]*)\|([^|]*)\|([\s\S]*)$/.exec(s);
-    if (!m || !m[1]) return null;
-    return { v: 1, key: m[1], sel: sel(m[2]), allowed: flag(m[3]), limits: limits(m[4]), reason: m[5] };
+    return SEEN_FIELDS.map(f => field[f]).join('|');
 }
-
-// The old report, v1 (what an older Main.ovl reads; kept for the tests):
-// "v1|<key>|<sel,...|?>|<1|0|->|<pmin,pmax,pdef,hmin,hmax,hdef (- none)>|<reason>"
-export function encodeSeenV1(s) {
-    const token = x => String(x).replace(/[|,\s]/g, '');
-    const sel = Array.isArray(s.sel) ? s.sel.map(token).filter(Boolean).join(',') : '?';
-    const allowed = s.allowed === true ? '1' : s.allowed === false ? '0' : '-';
-    const lim = SEEN_LIMITS.map(p => {
-        const n = s.limits ? s.limits[p] : null;
-        return typeof n === 'number' && Number.isFinite(n) ? String(n) : '-';
-    }).join(',');
-    const reason = String(s.reason || '').replace(/[\r\n]/g, ' ');
-    return ['v1', token(s.key), sel, allowed, lim, reason].join('|');
-}
-
 // ------------------------------------------------- what storage was scoped to
 // The game filters the storage list natively: with a species (or any other)
 // filter on, ['hubAnimalsData','animalStorageData','list'] holds only the rows
@@ -1045,9 +1052,6 @@ export function nativeFiltersOn(read) {
     return on;
 }
 
-// "[Animal_Lion]" / "Animal_Lion" / "Lion" -> "lion" (as scores.js normSpecies)
-const speciesKey = s => String(s == null ? '' : s).trim().replace(/^\[/, '').replace(/\]$/, '').replace(/^Animal_/i, '').toLowerCase().replace(/[^a-z0-9_]/g, '');
-
 // What the storage screen showed when the desk opened.
 //   rows: readAnimal() rows of the list as the game gave it; total: its
 //   animalsInStorage (or null); active: nativeFiltersOn(); modSpecies: the
@@ -1063,9 +1067,9 @@ export function storageScope({ rows = [], total = null, active = [], modSpecies 
     const known = (active || []).length > 0;
     const filtered = known || (typeof total === 'number' && Number.isFinite(total) && total > (rows || []).length);
     let species = null;
-    const want = speciesKey(modSpecies);
+    const want = normSpecies(modSpecies);
     if (want) {
-        const hit = list.find(a => speciesKey(a.species) === want);
+        const hit = list.find(a => normSpecies(a.species) === want);
         species = hit ? hit.species : null;
     }
     if (!species && filtered) {

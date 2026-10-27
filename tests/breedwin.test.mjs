@@ -3,8 +3,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-    catalogueFromZoopedia, habitatRows, infoPanelTarget, matchesQuery, moveTarget, pickedHabitat, programmeSignature, runnableMoves, speciesChoices, speciesOfPanel,
+    habitatRows, infoPanelTarget, matchesQuery, pickedHabitat, programmeSignature, runnableMoves, speciesChoices,
 } from '../mods/PZ2QoL/UI/UIGameface/js/mods/pz2qol/breedwincore.js';
+import { placeName } from '../mods/PZ2QoL/UI/UIGameface/js/mods/pz2qol/kinboardcore.js';
+import { HABITAT_SPECIES } from '../mods/PZ2QoL/UI/UIGameface/js/mods/pz2qol/speciesrules.js';
 
 function model() {
     const habitats = new Map([
@@ -51,28 +53,12 @@ test('pickedHabitat: a habitat, an animal\'s habitat, or why not', () => {
     assert.match(pickedHabitat(['P', 'habitatGateInfoPanel', '20'], m).error, /exhibit/);
 });
 
-test('speciesOfPanel: an animal\'s species, a habitat\'s main species', () => {
-    const m = model();
-    assert.equal(speciesOfPanel(['P', 'animalInfoPanel', '4'], m), 'Zebra');
-    assert.equal(speciesOfPanel(['P', 'habitatGateInfoPanel', '10'], m), 'Lion');
-    assert.equal(speciesOfPanel(['P', 'habitatGateInfoPanel', '12'], m), null);
-    assert.equal(speciesOfPanel(['P', 'animalInfoPanel', '8'], m), null);
-    assert.equal(speciesOfPanel(['P', 'guestInfoPanel', '1'], m), null);
-});
-
-test('catalogueFromZoopedia: ids, no shoals, exhibits or locked species, no repeats', () => {
-    const rows = [
-        { key: 'Animal_Lion', id: 'Lion' },
-        { key: 'Animal_Warthog_Common', id: '' },
-        { key: 'Animal_Clownfish', id: 'Clownfish', isShoal: true },
-        { key: 'Animal_Gecko', id: 'Gecko', isExhibitAnimal: true },
-        { key: 'Animal_Okapi', id: '[Animal_Okapi]' },
-        { key: 'Animal_Locked', id: 'Locked', isDlcLocked: true },
-        { key: 'Animal_Lion', id: 'Lion' },
-        { key: 'x', id: 'bad id!' },
-        null,
-    ];
-    assert.deepEqual(catalogueFromZoopedia(rows), ['Lion', 'Warthog_Common', 'Okapi']);
+// the window lists every habitat species of the game (the species table
+// from its animals.fdb), so a species only in storage shows too
+test('the catalogue: every habitat species the game has, each once', () => {
+    assert.ok(HABITAT_SPECIES.length > 50);
+    assert.ok(HABITAT_SPECIES.includes('Lion_African'));
+    assert.equal(new Set(HABITAT_SPECIES).size, HABITAT_SPECIES.length);
 });
 
 test('matchesQuery: every word, name or id, case and underscores ignored', () => {
@@ -149,10 +135,10 @@ test('programmeSignature follows the species and its habitats set aside only', (
     assert.notEqual(programmeSignature(m, 'Lion', a1), s1);
 });
 
-test('moveTarget names', () => {
+test('place names (placeName, shared with the board and the planner)', () => {
     const m = model();
-    assert.equal(moveTarget(m, 'trade', null), 'Trade Centre');
-    assert.equal(moveTarget(m, '10', null), 'Savannah');
-    assert.equal(moveTarget(m, '13', { habitats: [{ id: '13', name: 'New Field' }] }), 'New Field');
-    assert.equal(moveTarget(m, '77', null), 'Habitat 77');
+    assert.equal(placeName(m, 'trade', null), 'Trade Centre');
+    assert.equal(placeName(m, '10', null), 'Savannah');
+    assert.equal(placeName(m, '13', { habitats: [{ id: '13', name: 'New Field' }] }), 'New Field');
+    assert.equal(placeName(m, '77', null), 'Habitat 77');
 });

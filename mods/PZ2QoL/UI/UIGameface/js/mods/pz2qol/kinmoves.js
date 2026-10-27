@@ -9,13 +9,16 @@
 //  - runPlan(plan): a staged plan, started by one click, run ONE move at a
 //    time: send it, wait for the game to confirm it (the animal gets a
 //    transport job), pause, then the next. A refused or unconfirmed move is
-//    skipped and the run carries on; only Stop ends it. Franchise zoos run the
-//    same way: the Execute click is the opt-in.
+//    skipped and the run carries on, holding any later move that would then
+//    put relatives together; only Stop ends it. Franchise zoos run the same
+//    way: the Execute click is the opt-in.
 import { getKinModel, getKinSettings, onKin, requestKinScan } from '/js/mods/pz2qol/kin.js';
-import { prunePlan, moveText, TRADE, isPinned } from '/js/mods/pz2qol/kinboardcore.js';
+import { prunePlan, moveText, TRADE, heldPregnant, simulatePlan } from '/js/mods/pz2qol/kinboardcore.js';
+import { movesKeepingKinApart } from '/js/mods/pz2qol/kinautocore.js';
 import { normalizeStored } from '/js/mods/pz2qol/kincore.js';
 import { breadcrumb, reportError } from '/js/mods/pz2qol/errors.js';
 import { getPaceMs } from '/js/mods/pz2qol/pace.js';
+import { callAll } from '/js/mods/pz2qol/storecore.js';
 
 const ANSWER_TIMEOUT_MS = 6000;
 const CONFIRM_TIMEOUT_MS = 12000;
@@ -126,6 +129,13 @@ function merge(a, b) {
     };
 }
 
+// The game lists every habitat for a species, suitable or not: one of the
+// zoo's habitats missing from a cached answer was built after it.
+function knowsHabitats(model, byHabitat) {
+    for (const h of model.habitats.values()) if (h.kind !== 'exhibit' && !byHabitat[String(h.id)]) return false;
+    return true;
+}
+
 // Destinations for the species of these animals (cached 30 s per species).
 // Resolves { bySpecies, habitats, tradeCentre } or null.
 export async function requestDestinations(ids, { force = false } = {}) {
@@ -136,7 +146,7 @@ export async function requestDestinations(ids, { force = false } = {}) {
         const a = model && model.animals.get(String(id));
         if (!a) continue;
         const c = destCache.get(a.species);
-        if (!force && c && Date.now() - c.time < DEST_CACHE_MS) continue;
+        if (!force && c && Date.now() - c.time < DEST_CACHE_MS && knowsHabitats(model, c.value.bySpecies[a.species] || {})) continue;
         if (!species.has(a.species)) need.push(a.id);
         species.add(a.species);
     }
@@ -237,6 +247,9 @@ export function quarantinedForTrade() {
     return toTradeAfterQuarantine;
 }
 
+// moves sent and not yet answered by the game (a plan waits for them)
+let movesAsked = 0;
+
 // One move, one click. Resolves { ok, detail, quarantine }. opts.direct:
 // to the trade centre even when sick (the "passed quarantine" notice).
 export async function moveAnimal(id, to, opts = {}) {
@@ -252,7 +265,14 @@ export async function moveAnimal(id, to, opts = {}) {
         target = (q ? 'tradeq:' : 'trade:') + (tc ? tc.id : 'auto');
     }
     breadcrumb('kin_move');
-    const r = await ask('PZ2QoL_KinMove', { ok: false, detail: 'The game did not answer.' }, String(id), target);
+    movesAsked++;
+    let r;
+    try {
+        r = await ask('PZ2QoL_KinMove', { ok: false, detail: 'The game did not answer.' }, String(id), target);
+    }
+    finally {
+        movesAsked--;
+    }
     if (r && r.ok && r.detail === 'quarantine') {
         toTradeAfterQuarantine.add(String(id));
         r.quarantine = true;
@@ -263,51 +283,49 @@ export async function moveAnimal(id, to, opts = {}) {
     return r;
 }
 
+// The scan shows the move done or under way: the one test of whether a
+// move landed (the run's confirmation, Auto mode's and Undo's results).
+export function moveLanded(model, id, to) {
+    const a = model && model.animals.get(String(id));
+    // gone from the zoo after Send to Trade Centre: it has left
+    if (!a) return to === TRADE && !!model;
+    if (a.moving) return true;
+    // sick: on its way to a quarantine instead (moveAnimal)
+    if (to === TRADE && a.lt === 'quarantine') return true;
+    return to === TRADE ? a.lt === 'trade' : a.hab === String(to);
+}
+
 // Waits until the kin data shows the animal on its way (or there).
 function waitConfirmed(id, to, timeoutMs) {
-    const confirmed = model => {
-        const a = model && model.animals.get(String(id));
-        // gone from the zoo after Send to Trade Centre: it has left
-        if (!a) return to === TRADE && !!model;
-        if (a.moving) return true;
-        // sick: on its way to a quarantine instead (moveAnimal)
-        if (to === TRADE && a.lt === 'quarantine') return true;
-        return to === TRADE ? a.lt === 'trade' : a.hab === String(to);
-    };
+    const confirmed = model => moveLanded(model, id, to);
     return new Promise(resolve => {
         if (confirmed(getKinModel())) return resolve(true);
         let off = null;
-        const timer = setTimeout(() => {
+        const rescans = [];
+        const finish = ok => {
+            clearTimeout(timer);
+            for (const t of rescans) clearTimeout(t);
             if (off) off();
-            resolve(false);
-        }, timeoutMs);
+            resolve(ok);
+        };
+        const timer = setTimeout(() => finish(false), timeoutMs);
         off = onKin(model => {
-            if (confirmed(model)) {
-                clearTimeout(timer);
-                off();
-                resolve(true);
-            }
+            if (confirmed(model)) finish(true);
         });
         // ask again a few times while waiting
-        for (const t of [1500, 4000, 8000]) setTimeout(() => requestKinScan('confirm', { force: true }), t);
+        for (const t of [1500, 4000, 8000]) rescans.push(setTimeout(() => requestKinScan('confirm', { force: true }), t));
     });
 }
 
 // -------------------------------------------------------------- plan runs
 
-let run = { running: false, stopping: false, done: 0, total: 0, current: null, log: [], error: null, finished: false };
+// moves: the run's [{ id, to }] (Auto mode tells them from moves made by hand)
+let run = { running: false, stopping: false, done: 0, total: 0, current: null, log: [], error: null, finished: false, moves: [] };
 const runListeners = new Set();
 
 function setRun(patch) {
     run = Object.assign({}, run, patch);
-    runListeners.forEach(fn => {
-        try {
-            fn(run);
-        }
-        catch (e) {
-            // a listener must never stop the run
-        }
-    });
+    callAll(runListeners, run);
 }
 
 export function getPlanRun() {
@@ -323,7 +341,8 @@ export function onPlanRun(fn) {
 export function planBlockedReason(model = getKinModel()) {
     if (!model) return 'No kin data yet.';
     if (run.running) return 'A plan is already running.';
-    // Franchise too: the Execute click is the opt-in (the developer's decision, 2026-10-16)
+    if (movesAsked > 0) return 'A move is still waiting for the game\'s answer. Try again in a moment.';
+    // Franchise too: the player's Execute click is the approval every move of the plan needs
     return '';
 }
 
@@ -333,7 +352,93 @@ export function stopPlan() {
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+// One row of a run's log per move it reached: { id, to, text, ok (landed),
+// status: moved | quarantine | gone | pregnant | held | refused |
+// unconfirmed, asked (the game was asked to move it), why, detail (shown) }
+function logMove(m, text, status, why = '') {
+    const ok = status === 'moved' || status === 'quarantine';
+    const asked = ok || status === 'refused' || status === 'unconfirmed';
+    const row = { id: String(m.id), to: m.to, text, ok, status, asked, why };
+    if (!ok) row.detail = `skipped: ${why}`;
+    setRun({ log: run.log.concat([row]) });
+}
+
+// What a run (runPlan's result) did with one of its moves: { landed,
+// asked, why }. A move the game confirmed after the run gave up on it
+// still lands when the scan shows it; a run that never started asked none.
+export function moveOutcome(result, model, id, to) {
+    const row = result && result.log ? result.log.find(r => r.id === String(id)) : null;
+    if (!row) return { landed: false, asked: false, why: (result && !result.log && result.detail) || (result && result.stopped ? 'not run (stopped)' : 'not run') };
+    return { landed: row.ok || (row.asked && moveLanded(model, id, to)), asked: row.asked, why: row.why };
+}
+
+const KIN_HELD_WHY = 'it would live with a relative of the other sex: the move that was to part them did not go ahead';
+
+// A move of a run that did not go ahead can leave a later one bringing an
+// adult in with a relative of the other sex: those leave the queue and are
+// logged as held. -> the held moves' texts
+function holdKinMeetings(queue, landed, destinations) {
+    const model = getKinModel();
+    // a confirmed move may still show the animal where it was (on its way)
+    const now = simulatePlan(model, landed, destinations);
+    const { moves, dropped } = movesKeepingKinApart(now, queue, destinations || null);
+    queue.splice(0, queue.length, ...moves);
+    return dropped.map(m => {
+        const text = moveText(model, m, destinations);
+        logMove(m, text, 'held', KIN_HELD_WHY);
+        return text;
+    });
+}
+
+// One move of a run. -> { status: moved | gone | skipped | stopped,
+// error (a skip's reason for the run's summary), paced (pause before the next) }
+async function runMove(m, destinations, beforeEach) {
+    const model = getKinModel();
+    const text = moveText(model, m, destinations);
+    if (!prunePlan(model, [m]).length) {
+        logMove(m, text, 'gone', 'it can no longer move (or is already there)');
+        return { status: 'gone' };
+    }
+    // a pregnant animal stays (she can't be sold and has to give birth
+    // first), unless she waits at the trade centre (kinboardcore heldPregnant)
+    const animal = model && model.animals.get(String(m.id));
+    if (animal && heldPregnant(animal, m)) {
+        breadcrumb('kin_plan_skip_pregnant');
+        logMove(m, text, 'pregnant', 'pregnant (plans never move her until she gives birth)');
+        return { status: 'skipped', error: `${text}: she is pregnant; plans never move her until she gives birth.` };
+    }
+    setRun({ current: text });
+    if (beforeEach) {
+        let why = '';
+        try {
+            why = await beforeEach(m);
+        }
+        catch (e) {
+            reportError('mod', 'Kin plan: the check before a move failed', e, { silent: true });
+            why = 'the check before the move failed';
+        }
+        if (why) {
+            logMove(m, text, 'held', why);
+            return { status: 'skipped', error: `${text}: ${why}`, paced: true };
+        }
+        if (run.stopping) return { status: 'stopped' };
+    }
+    // a refused or unconfirmed move does not end the run (only Stop does): the later moves are checked again against the zoo as it is
+    const r = await moveAnimal(m.id, m.to);
+    if (!r.ok) {
+        logMove(m, text, 'refused', r.detail || 'refused');
+        return { status: 'skipped', error: `${text}: ${r.detail || 'the game refused the move'}`, paced: true };
+    }
+    if (!(await waitConfirmed(m.id, m.to, CONFIRM_TIMEOUT_MS))) {
+        logMove(m, text, 'unconfirmed', 'not confirmed');
+        return { status: 'skipped', error: `${text}: the game did not confirm the move.`, paced: true };
+    }
+    logMove(m, text, r.quarantine ? 'quarantine' : 'moved');
+    return { status: 'moved', paced: true };
+}
+
 // Runs a plan: one move at a time, each confirmed by the game.
+// -> { ok, detail, done, stopped (the player's Stop), log (logMove's rows; none when it never started) }
 // Options only Auto mode passes (unset: exactly the board's run):
 //   beforeEach    async (move) => '' to go on, or a reason to skip it (the
 //                 game's gate: movement allowed, server idle...)
@@ -342,73 +447,39 @@ export async function runPlan(plan, { destinations, beforeEach = null, owner = '
     const blocked = planBlockedReason();
     if (blocked) return { ok: false, detail: blocked };
     const moves = prunePlan(getKinModel(), plan);
-    if (!moves.length) return { ok: false, detail: 'Nothing to move.' };
-    setRun({ running: true, stopping: false, done: 0, total: moves.length, current: null, log: [], error: null, finished: false, owner });
+    if (!moves.length) return { ok: false, detail: 'Nothing to move.', done: 0, log: [] };
+    setRun({ running: true, stopping: false, done: 0, total: moves.length, current: null, log: [], error: null, finished: false, owner, moves: moves.map(m => ({ id: String(m.id), to: m.to })) });
     breadcrumb('kin_plan_start');
     let error = null;
     let skipped = 0;
-    for (const m of moves) {
-        if (run.stopping) break;
-        const model = getKinModel();
-        const still = prunePlan(model, [m]);
-        const text = moveText(model, m, destinations);
-        if (!still.length) {
-            setRun({ log: run.log.concat([{ text, ok: false, detail: 'skipped: it can no longer move (or is already there)' }]) });
-            continue;
+    const queue = moves.slice();
+    const landed = [];
+    while (queue.length && !run.stopping) {
+        const m = queue.shift();
+        const step = await runMove(m, destinations, beforeEach);
+        if (step.status === 'stopped') break;
+        if (step.status === 'moved') {
+            landed.push(m);
+            setRun({ done: run.done + 1 });
         }
-        // a pregnant animal stays (she can't be sold and has to give birth
-        // first): only a move the player planned by hand is run
-        if (!m.byPlayer && isPinned(model && model.animals.get(String(m.id)))) {
-            skipped++;
-            error = `${text}: she is pregnant; plans never move her until she gives birth.`;
-            breadcrumb('kin_plan_skip_pregnant');
-            setRun({ log: run.log.concat([{ text, ok: false, detail: 'skipped: pregnant (plans never move her until she gives birth)' }]) });
-            continue;
-        }
-        setRun({ current: text });
-        if (beforeEach) {
-            let why = '';
-            try {
-                why = await beforeEach(m);
-            }
-            catch (e) {
-                why = '';
-            }
-            if (run.stopping) break;
-            if (why) {
+        else {
+            if (step.error) {
                 skipped++;
-                error = `${text}: ${why}`;
-                setRun({ log: run.log.concat([{ text, ok: false, detail: `skipped: ${why}` }]) });
-                await sleep(getPaceMs('moves'));
-                continue;
+                error = step.error;
+            }
+            const held = holdKinMeetings(queue, landed, destinations);
+            if (held.length) {
+                skipped += held.length;
+                error = `${held[held.length - 1]}: ${KIN_HELD_WHY}`;
             }
         }
-        // a refused or unconfirmed move is skipped and the plan carries on;
-        // only Stop ends a run (the developer's decision, 2026-10-16)
-        const r = await moveAnimal(m.id, m.to);
-        if (!r.ok) {
-            skipped++;
-            error = `${text}: ${r.detail || 'the game refused the move'}`;
-            setRun({ log: run.log.concat([{ text, ok: false, detail: `skipped: ${r.detail || 'refused'}` }]) });
-            await sleep(getPaceMs('moves'));
-            continue;
-        }
-        const ok = await waitConfirmed(m.id, m.to, CONFIRM_TIMEOUT_MS);
-        if (!ok) {
-            skipped++;
-            error = `${text}: the game did not confirm the move.`;
-            setRun({ log: run.log.concat([{ text, ok: false, detail: 'skipped: not confirmed' }]) });
-            await sleep(getPaceMs('moves'));
-            continue;
-        }
-        setRun({ done: run.done + 1, log: run.log.concat([{ text, ok: true }]) });
-        await sleep(getPaceMs('moves'));
+        if (step.paced && !run.stopping) await sleep(getPaceMs('moves'));
     }
     if (skipped) error = `${skipped} move${skipped === 1 ? '' : 's'} skipped; the last: ${error}`;
     const stopped = run.stopping;
     setRun({ running: false, stopping: false, current: null, error, finished: true });
     breadcrumb('kin_plan_end');
-    // the board shows the error itself; keep a silent copy in the log
+    // the board shows the error itself; a copy for the log
     if (error) reportError('mod', 'Kin plan stopped', error, { silent: true });
-    return { ok: !error, detail: error || (stopped ? 'Stopped.' : ''), done: run.done };
+    return { ok: !error, detail: error || (stopped ? 'Stopped.' : ''), done: run.done, stopped, log: run.log };
 }

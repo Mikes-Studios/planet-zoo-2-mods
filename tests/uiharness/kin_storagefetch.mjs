@@ -104,7 +104,7 @@ export async function frontend(page, ctx) {
                 DS.setValue(STORAGE, 'selectedAnimalIDs', cur);
             });
         });
-        engine.on('PZ2QoL_SendArm', (n, online, target) => rec('arm', n, online, target));
+        engine.on('PZ2QoL_SendArm', (n, target) => rec('arm', n, target));
         engine.on('AnimalStorage_SendToZoo', ids => rec('send', Array.isArray(ids) ? ids.slice() : ids));
         engine.on('PZ2QoL_FetchAck', seq => rec('ack', seq));
         engine.on('PZ2QoL_DeskFilters', (req) => setTimeout(() => engine.trigger('PZ2QoL_DeskFiltersState', req, '{"ok":true,"cleared":true,"detail":""}'), 20));
@@ -136,7 +136,7 @@ export async function frontend(page, ctx) {
         facts.ev1 = await events();
         const arms = facts.ev1.filter(e => e[0] === 'arm');
         const sends = facts.ev1.filter(e => e[0] === 'send');
-        if (arms.length !== 1 || arms[0][1] !== 2 || arms[0][2] !== true || arms[0][3] !== 'trade') problems.push('arm: ' + JSON.stringify(arms));
+        if (arms.length !== 1 || arms[0][1] !== 2 || arms[0][2] !== 'trade') problems.push('arm: ' + JSON.stringify(arms));
         if (sends.length !== 1 || JSON.stringify(sends[0][1].slice().sort()) !== JSON.stringify([keyOf('Asha'), keyOf('Bo')].sort())) problems.push('send: ' + JSON.stringify(sends));
         if (facts.ev1.findIndex(e => e[0] === 'arm') > facts.ev1.findIndex(e => e[0] === 'send')) problems.push('send before arm');
         if (!facts.ev1.some(e => e[0] === 'ack' && e[1] === 1)) problems.push('request 1 not acknowledged');
@@ -154,7 +154,7 @@ export async function frontend(page, ctx) {
             (await import('/js/mods/pz2qol/storagefetch.js'))._resetFetch();
         });
         await resetEvents();
-        await page.evaluate(() => engine.trigger('PZ2QoL_FetchPending', 2, 'Okapi', -1, 'n:0:bo', false));
+        await page.evaluate(() => engine.trigger('PZ2QoL_FetchPending', 2, 'Okapi', -1, 'n:0:okapi:bo', false));
         await page.waitForFunction(() => /\bSend\b/.test(document.querySelector('.PZ2QoL_sfCard .PZ2QoL_ssButtons')?.innerText || ''), null, { timeout: 8000 }).catch(() => {});
         await page.waitForTimeout(3600);
         facts.stale = await cardText(page, '.PZ2QoL_sfCard');
@@ -227,7 +227,7 @@ export async function frontend(page, ctx) {
             col.dispose();
             return keys;
         }, STORAGE);
-        await page.evaluate(() => engine.trigger('PZ2QoL_FetchPending', 7, '*', -1, 'n:0:bo', false));
+        await page.evaluate(() => engine.trigger('PZ2QoL_FetchPending', 7, '*', -1, 'n:0:okapi:bo', false));
         await page.waitForFunction(() => /\bSend\b/.test(document.querySelector('.PZ2QoL_sfCard .PZ2QoL_ssButtons')?.innerText || ''), null, { timeout: 8000 }).catch(() => {});
         facts.allCard = await cardText(page, '.PZ2QoL_sfCard');
         await ctx.shot(page, 'sf_9_hub_all');
@@ -241,7 +241,7 @@ export async function frontend(page, ctx) {
         const s6 = facts.ev6.filter(e => e[0] === 'send');
         const a6 = facts.ev6.filter(e => e[0] === 'arm');
         if (s6.length !== 1 || JSON.stringify(s6[0][1].slice().sort()) !== JSON.stringify(facts.allExpected.slice().sort())) problems.push(`all send (${facts.allExpected.length} expected): ` + JSON.stringify(s6));
-        if (a6.length !== 1 || a6[0][1] !== facts.allExpected.length || a6[0][3] !== 'trade') problems.push('all arm: ' + JSON.stringify(a6));
+        if (a6.length !== 1 || a6[0][1] !== facts.allExpected.length || a6[0][2] !== 'trade') problems.push('all arm: ' + JSON.stringify(a6));
         facts.state = await state();
     }
     finally {
@@ -363,7 +363,7 @@ export async function hud(page, ctx) {
         facts.starts = (await sfp()).starts;
         facts.closed = !(await page.evaluate(async url => (await import(url)).isSpeciesBoardOpen(), BOARD));
         if (facts.starts.length !== 1 || facts.starts[0][0] !== 'Lion') problems.push('FetchStart: ' + JSON.stringify(facts.starts));
-        else if (!facts.starts[0][1].split(',').includes('g:81210042') || !facts.starts[0][1].split(',').includes('n:1:zawadi')) problems.push('exclude list: ' + facts.starts[0][1]);
+        else if (!facts.starts[0][1].split(',').includes('g:81210042') || !facts.starts[0][1].split(',').includes('n:1:lion:zawadi')) problems.push('exclude list: ' + facts.starts[0][1]);
         if (!facts.closed) problems.push('the board did not close after the click');
 
         // 1b. "Bring all": the outlined button under it, species '*', the whole park excluded
@@ -439,7 +439,7 @@ export async function hud(page, ctx) {
                 setTimeout(() => engine.trigger('PZ2QoL_SendOpenMoveResult', req, true, ''), 20);
             });
         });
-        await page.evaluate(() => engine.trigger('PZ2QoL_SendArrived', 31, '201,202,203,204', true, 'trade'));
+        await page.evaluate(() => engine.trigger('PZ2QoL_SendArrived', 31, '201,202,203,204', 'trade'));
         await page.waitForTimeout(1200);
         facts.running = await cardText(page);
         await ctx.shot(page, 'sf_7_park_running');

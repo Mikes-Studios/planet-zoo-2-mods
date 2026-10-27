@@ -8,7 +8,7 @@
 // job can continue: the same rounds give the same plan
 // (docs/PLAN-deep-optimiser.md).
 import { planProgrammeAsync, programmeLogData } from '/js/mods/pz2qol/kinprogramme.js';
-import { getPref, onPrefs, setPref } from '/js/mods/pz2qol/prefs.js';
+import { getPref, onPrefs, updatePref } from '/js/mods/pz2qol/prefs.js';
 import { breadcrumb, reportError } from '/js/mods/pz2qol/errors.js';
 import { dlog } from '/js/mods/pz2qol/debuglog.js';
 
@@ -50,6 +50,9 @@ export const CPU_STEPS = Object.freeze({
     full: Object.freeze({ label: 'Full', sliceMs: 30, restMs: 0 }),
 });
 export const CPU_ORDER = Object.freeze(['gentle', 'light', 'normal', 'full']);
+// Auto mode's runs, whatever CPU use says: they come while the player plays,
+// and the page's thread is also the game's cursor and frames
+export const AUTO_CPU = CPU_STEPS.gentle;
 
 const PREF_KEY = 'progOpt';
 const DEFAULTS = Object.freeze({ engine: 'classic', preset: 'standard', cpu: 'normal' });
@@ -79,14 +82,17 @@ export function getOptimiser() {
     return normalizeOptimiser(getPref(PREF_KEY));
 }
 
-// patch: { engine?, preset?, cpu?, custom? (merged) }; saved as the default
+// patch: { engine?, preset?, cpu?, custom? (merged) }; saved as the default,
+// merged into what the store holds (another page may have saved since)
 export function setOptimiser(patch) {
-    const cur = getOptimiser();
-    const next = Object.assign({}, cur, patch || {});
-    if (next.preset === 'custom') next.custom = Object.assign({}, CUSTOM_DEFAULT, cur.custom || {}, (patch && patch.custom) || {});
-    else delete next.custom;
-    const norm = normalizeOptimiser(next);
-    setPref(PREF_KEY, norm);
+    updatePref(PREF_KEY, old => {
+        const cur = normalizeOptimiser(old);
+        const next = Object.assign({}, cur, patch || {});
+        if (next.preset === 'custom') next.custom = Object.assign({}, CUSTOM_DEFAULT, cur.custom || {}, (patch && patch.custom) || {});
+        else delete next.custom;
+        return normalizeOptimiser(next);
+    });
+    const norm = getOptimiser();
     breadcrumb(`kin_prog_opt_${norm.engine}_${norm.preset}`);
     return norm;
 }
@@ -119,10 +125,13 @@ export function deepKey(opt = getOptimiser()) {
     return `${d.starts}|${d.effort}|${d.repair}|${d.limitMin}|${d.patience}`;
 }
 
-// A rough time for a run (no start finished yet), from the Node
-// measurements, assuming the game's UI is up to twice as slow: seconds.
-export function estimateSeconds(breeders, settings, msPerStart = null) {
-    const per = msPerStart != null ? msPerStart / 1000 : Math.max(0.2, 0.0016 * breeders * breeders) * settings.effort;
+// The share of the time a CPU setting searches (the rest it leaves the game).
+const busyShare = cpu => cpu.sliceMs / (cpu.sliceMs + cpu.restMs);
+
+// A rough run time in seconds at these settings and CPU use: from a start measured earlier
+// (msPerStartFor: effort 1, full CPU), else from the Node measurements (the game's UI up to twice as slow).
+export function estimateSeconds(breeders, settings, msPerStart = null, cpu = cpuOf()) {
+    const per = (msPerStart != null ? msPerStart / 1000 : Math.max(0.2, 0.0016 * breeders * breeders)) * settings.effort / busyShare(cpu);
     const all = per * settings.starts;
     return settings.limitMin > 0 ? Math.min(all, settings.limitMin * 60) : all;
 }
@@ -140,7 +149,7 @@ export function durationText(sec) {
 let job = null;                   // the running job, or null
 const results = new Map();        // cacheKey -> entry, oldest first
 const listeners = new Set();
-let lastMsPerStart = new Map();   // species -> ms per start (for estimates)
+let lastMsPerStart = new Map();   // species -> ms per start at effort 1 and full CPU (for estimates)
 
 const cacheKey = (species, key, dkey, psig) => `${species}\u0001${key}\u0001${dkey}\u0001${psig}`;
 
@@ -245,7 +254,7 @@ export function startDeep(args) {
     }).then(r => {
         if (j.cancelled) return;
         if (job === j) job = null;
-        if (j.msPerStart != null) lastMsPerStart.set(j.species, j.msPerStart);
+        if (j.msPerStart != null) lastMsPerStart.set(j.species, j.msPerStart * busyShare(cpu) / s.effort);
         if (r) {
             remember({ species: j.species, key: j.key, dkey: j.dkey, psig: j.psig, r, stopped: r.stopped || null, resume: r.resume || null, done: r.starts, planned: j.planned, at: Date.now(), warmTotal: j.warmTotal });
             dlog('kin', 'prog_deep_done', Object.assign({ species: j.species, breeders: j.breeders, starts: r.starts, planned: j.planned, bestStart: r.bestStart, stopped: r.stopped || 'no', msPerStart: j.msPerStart, ms: Date.now() - j.startedAt }, programmeLogData(r)));
@@ -300,7 +309,9 @@ export function installDeep() {
     installed = true;
     try {
         if (typeof engine !== 'undefined' && engine && typeof engine.on === 'function') {
-            engine.on('PZ2QoL_StoreReset', () => {
+            // a park started or ended: searches over its animals are moot
+            engine.on('PZ2QoL_StoreReset', why => {
+                if (why !== 'park') return;
                 if (job || results.size) breadcrumb('kin_prog_deep_reset');
                 cancelAllDeep();
             });

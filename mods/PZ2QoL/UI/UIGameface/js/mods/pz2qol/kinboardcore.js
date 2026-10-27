@@ -10,9 +10,12 @@
 // Destinations come from the Lua side (the game's own checks):
 //   { bySpecies: { <species>: { <habitatId>: { ok, reason } } },
 //     habitats: [{ id, name }], tradeCentre: { id, name } | null }
-import { buildKinModel, normalizeSnapshot, isCollective, severityRank, offspringScore, predictOffspring, fertileNow, fertilityText, Sex, withStored, pairSeverity, compatibleSexes } from './kincore.js';
+import { buildKinModel, normalizeSnapshot, isCollective, severityRank, offspringScore, predictOffspring, fertileNow, fertilityText, Sex, withStored, pairSeverity, compatibleSexes, kinTier } from './kincore.js';
 
+import { pastSelling } from './kinageing.js';
 export const TRADE = 'trade';
+// the board's column for animals outside a habitat and the trade centre
+export const AWAY = 'away';
 const COUNTED = s => s === 'risk' || s === 'kin' || s === 'future';
 
 // Animals that may be moved: in a habitat or the trade centre, not exhibit
@@ -31,7 +34,23 @@ export function isPinned(a) {
     return !!a && !!a.preg;
 }
 
-export const PREGNANT_STAYS = "pregnant: she stays until she gives birth (she can't be sold)";
+// The rule above every other: a pregnant, young or past-selling
+// adult never waits at the trade centre (a pregnancy only goes on in a
+// habitat, a young one only grows there, and the market takes none of them;
+// the trade centre ages nothing, so they would stay for good), whatever
+// lock or leaving mark it has.
+export function mustHouse(a) {
+    return canMove(a) && a.lt === 'trade' && (!!a.preg || !!a.juv || pastSelling(a));
+}
+
+// A plan's move of a pregnant female is skipped (she gives birth where she
+// is), except the one the golden rule asks for: out of the trade centre into
+// a habitat (mustHouse). A move the player planned by hand always runs.
+export function heldPregnant(a, m) {
+    return isPinned(a) && !m.byPlayer && !(mustHouse(a) && String(m.to) !== TRADE);
+}
+
+export const PREGNANT_STAYS ="pregnant: she stays until she gives birth (she can't be sold)";
 
 function emptyCounts() {
     return { risk: 0, kin: 0, future: 0, held: 0, covered: 0 };
@@ -67,12 +86,25 @@ export function speciesList(model, { muted = null } = {}) {
 
 // ----------------------------------------------------------- simulation
 
-function destName(model, to, destinations) {
+// Where an animal is: its habitat, TRADE or AWAY.
+export function homeOf(a) {
+    return a.hab || (a.lt === 'trade' ? TRADE : AWAY);
+}
+
+// A place by name, for every Kin view alike: the trade centre, 'away' (on
+// the move, at the vet, in a quarantine) or a habitat, named by the model,
+// the destination check or the scan's full habitat list.
+export function placeName(model, to, destinations) {
+    if (to == null || to === '') return '';
     if (to === TRADE) return (destinations && destinations.tradeCentre && destinations.tradeCentre.name) || (model && model.tradeCentre && model.tradeCentre.name) || 'Trade centre';
-    const h = model.habitats.get(String(to));
+    if (to === AWAY) return 'Elsewhere';
+    const id = String(to);
+    const h = model && model.habitats ? model.habitats.get(id) : null;
     if (h && h.name) return h.name;
-    const d = destinations && (destinations.habitats || []).find(x => String(x.id) === String(to));
-    return d ? d.name : String(to);
+    const d = destinations && Array.isArray(destinations.habitats) ? destinations.habitats.find(x => String(x.id) === id) : null;
+    if (d && d.name) return String(d.name);
+    const s = model && model.snapshot && Array.isArray(model.snapshot.habs) ? model.snapshot.habs.find(x => x && String(x.id) === id) : null;
+    return s && s.name ? String(s.name) : `Habitat ${id}`;
 }
 
 // The snapshot as it would be after the plan: moved animals sit in their
@@ -86,13 +118,14 @@ export function plannedSnapshot(model, plan, destinations) {
     const animals = snap.animals.map(a => {
         const m = moves.get(a.id);
         if (!m) return a.bond && moves.has(a.bond.mate) ? Object.assign({}, a, { bond: null }) : a;
-        if (m.to === TRADE) return Object.assign({}, a, { hab: '', loc: destName(model, TRADE, destinations), lt: 'trade', mates: [], bond: null });
-        return Object.assign({}, a, { hab: String(m.to), loc: destName(model, m.to, destinations), lt: 'habitat', mates: [], bond: null });
+        // at its destination, not in transit (a run's confirmed moves)
+        if (m.to === TRADE) return Object.assign({}, a, { hab: '', loc: placeName(model, TRADE, destinations), lt: 'trade', moving: false, mates: [], bond: null });
+        return Object.assign({}, a, { hab: String(m.to), loc: placeName(model, m.to, destinations), lt: 'habitat', moving: false, mates: [], bond: null });
     });
     const habitats = snap.habitats.slice();
     for (const m of moves.values()) {
         if (m.to !== TRADE && !habitats.some(h => h.id === String(m.to))) {
-            habitats.push({ id: String(m.to), name: destName(model, m.to, destinations), kind: 'habitat' });
+            habitats.push({ id: String(m.to), name: placeName(model, m.to, destinations), kind: 'habitat' });
         }
     }
     return Object.assign({}, snap, { animals, habitats, normalized: true });
@@ -340,6 +373,14 @@ function habitatOk(destinations, species, habId) {
     return d ? d : { ok: false, reason: 'Not a suitable habitat for this species.' };
 }
 
+// Does no habitat suit the species besides the one it lives in (or none)?
+// checks: the destination check for the species ({ <habitatId>: { ok } }),
+// homes: the habitats it lives in now.
+export function noOtherHabitat(checks, homes) {
+    if (homes.size > 1) return false;
+    return !Object.entries(checks || {}).some(([id, d]) => d && d.ok && !homes.has(String(id)));
+}
+
 function countsOf(animals) {
     const c = { males: 0, females: 0, juveniles: 0, total: animals.length };
     for (const x of animals) {
@@ -370,38 +411,34 @@ export function boardColumns(model, species, plan, destinations, { includeEmpty 
         }
         return columns.get(id);
     };
+    // m: the model that names the place (a planned destination is only in the simulated one)
+    const placeCol = (m, id) => col(id, placeName(m, id, destinations), id === TRADE ? 'trade' : id === AWAY ? 'away' : 'habitat');
     // where every animal of the species is after the plan
     for (const a of after.animals.values()) {
         if (a.species !== species || a.exhibit) continue;
         const before = model.animals.get(a.id);
         const m = moves.get(a.id);
-        let c;
-        if (a.hab) c = col(a.hab, (after.habitats.get(a.hab) || {}).name || a.loc || a.hab, 'habitat');
-        else if (a.lt === 'trade') c = col(TRADE, destName(model, TRADE, destinations), 'trade');
-        else c = col('away', 'Elsewhere', 'away');
+        const c = placeCol(after, homeOf(a));
         const pairs = (after.byAnimal.get(a.id) || []).filter(p => COUNTED(p.severity) || p.severity === 'held' || p.severity === 'covered');
         c.animals.push({ a, severity: pairs.length ? pairs[0].severity : null, pairs, planned: m ? 'in' : null, from: m && before ? (before.hab || before.lt || '') : null });
         if (m && before) {
-            const fromId = before.hab || (before.lt === 'trade' ? TRADE : 'away');
-            const fromCol = col(fromId, before.hab ? ((model.habitats.get(before.hab) || {}).name || before.loc) : (before.lt === 'trade' ? destName(model, TRADE, destinations) : 'Elsewhere'), before.hab ? 'habitat' : before.lt === 'trade' ? 'trade' : 'away');
-            fromCol.leaving.push({ a: before, to: m.to, toName: destName(model, m.to, destinations) });
+            placeCol(model, homeOf(before)).leaving.push({ a: before, to: m.to, toName: placeName(model, m.to, destinations) });
         }
     }
     // suitable habitats without this species yet, and every habitat assigned to it
     if (includeEmpty && destinations && destinations.bySpecies && destinations.bySpecies[species]) {
         for (const [habId, d] of Object.entries(destinations.bySpecies[species])) {
             if (!d.ok || columns.has(habId)) continue;
-            col(habId, destName(model, habId, destinations), 'habitat');
+            col(habId, placeName(model, habId, destinations), 'habitat');
         }
     }
     for (const [habId, set] of assign) {
-        if (set.has(species) && !columns.has(habId)) col(habId, destName(model, habId, destinations), 'habitat');
+        if (set.has(species) && !columns.has(habId)) col(habId, placeName(model, habId, destinations), 'habitat');
     }
     // the trade centre is always offered: the Lua side finds it when the
-    // move is made (the game's own "send to trade centre" does the same)
-    col(TRADE, destName(model, TRADE, destinations), 'trade');
-    // the player's stored adults (Franchise): read-only, outside counts and risk
-    col(TRADE, destName(model, TRADE, destinations), 'trade').stored = storedCards(model, species, stored);
+    // move is made (the game's own "send to trade centre" does the same);
+    // it lists the player's stored adults (Franchise): read-only, outside counts and risk
+    placeCol(model, TRADE).stored = storedCards(model, species, stored);
     // the other species sharing each habitat, and its risks for this species
     for (const c of columns.values()) {
         c.counts = countsOf(c.animals);
@@ -457,7 +494,6 @@ export function storedCards(model, species, stored) {
     }
     const view = withStored(model, stored);
     const ped = (view && view.ped) || model.ped;
-    const close = typeof model.closeKinship === 'number' ? model.closeKinship : 0.0625;
     const out = [];
     for (const a of stored.animals) {
         if (!a || a.species !== species || ids.has(String(a.id)) || (a.guid && guids.has(String(a.guid)))) continue;
@@ -467,7 +503,7 @@ export function storedCards(model, species, stored) {
                 if (!compatibleSexes(a, o)) continue;
                 const rel = ped.relation(a.guid, o.guid);
                 if (!rel) continue;
-                const tier = rel.game ? 'game' : rel.kinship >= close - 1e-9 ? 'close' : 'distant';
+                const tier = kinTier(model, rel);
                 if (tier === 'distant') continue;
                 pairs.push({ other: o, rel, tier, severity: pairSeverity(a, o, tier) });
             }
@@ -517,17 +553,18 @@ export function planProblems(model, plan, destinations, { assignments = null } =
             continue;
         }
         if (!canMove(a)) out.push({ id: m.id, text: `${a.name} cannot be moved right now${a.moving ? ' (already on the move)' : ''}.` });
-        else if (isPinned(a)) {
-            out.push(m.byPlayer
-                ? { id: m.id, warn: true, preg: true, text: `${a.name} is pregnant: the game lets you move her, but she can't be sold and has to give birth first.` }
-                : { id: m.id, preg: true, text: `${a.name} is pregnant: Kin's plans never move her (she has to give birth first). Run skips this move.` });
+        else if (m.byPlayer && isPinned(a)) {
+            out.push({ id: m.id, warn: true, preg: true, text: `${a.name} is pregnant: the game lets you move her, but she can't be sold and has to give birth first.` });
+        }
+        else if (heldPregnant(a, m)) {
+            out.push({ id: m.id, preg: true, text: `${a.name} is pregnant: Kin's plans never move her (she has to give birth first). Run skips this move.` });
         }
         if (m.to !== TRADE) {
             const d = habitatOk(destinations, a.species, m.to);
             if (d && !d.ok) out.push({ id: m.id, text: `${a.name}: ${d.reason || 'not a suitable habitat'}` });
             const set = assign.get(String(m.to));
             if (set && !set.has(a.species)) {
-                out.push({ id: m.id, warn: true, text: `${a.name}: ${destName(model, m.to, destinations)} is assigned to ${Array.from(set).join(', ')}.` });
+                out.push({ id: m.id, warn: true, text: `${a.name}: ${placeName(model, m.to, destinations)} is assigned to ${Array.from(set).join(', ')}.` });
             }
         }
     }
@@ -542,12 +579,6 @@ export function fertileAdult(a) {
     return !!a && !a.contra && a.alive !== false && fertileNow(a);
 }
 
-// A pair near the end of its fertile years counts for less: it breeds for
-// a short while only.
-function pairWeight(a, b) {
-    return (a.fert && a.fert.state === 'ending') || (b.fert && b.fert.state === 'ending') ? 0.5 : 1;
-}
-
 // Why an animal does not breed, in words.
 export function notBreedingText(a) {
     if (!a) return '';
@@ -558,7 +589,7 @@ export function notBreedingText(a) {
 // Not related closely enough to count (the game's rule or close kin).
 function unrelatedEnough(model, a, b) {
     const rel = a.guid && b.guid ? model.ped.relation(a.guid, b.guid) : null;
-    return !rel || (!rel.game && rel.kinship < model.closeKinship - 1e-9);
+    return !rel || kinTier(model, rel) === 'distant';
 }
 
 // The breeding pairs of one species in one habitat: fertile adult males x
@@ -570,31 +601,23 @@ export function breedingPairs(model, habId, species) {
     const males = list.filter(x => x.sex === Sex.Male);
     const females = list.filter(x => x.sex === Sex.Female);
     const unisex = list.filter(x => x.sex === Sex.Unisex);
-    let pairs = 0, weighted = 0, best = null;
+    let pairs = 0, best = null;
+    const partnered = new Set();
     const consider = (a, b) => {
         if (!unrelatedEnough(model, a, b)) return;
         pairs++;
-        weighted += pairWeight(a, b);
+        partnered.add(a).add(b);
         const sc = offspringScore(predictOffspring(a.genes, b.genes));
         if (sc != null && (best == null || sc > best)) best = sc;
     };
     for (const m of males) for (const f of females) consider(m, f);
     for (let i = 0; i < unisex.length; i++) for (let j = i + 1; j < unisex.length; j++) consider(unisex[i], unisex[j]);
-    return { pairs, weighted, males: males.length, females: females.length, best };
+    // bred: the breeders with an unrelated partner there (half for one near the end of its fertile years)
+    let bred = 0;
+    for (const a of partnered) bred += a.fert && a.fert.state === 'ending' ? 0.5 : 1;
+    return { pairs, bred, males: males.length, females: females.length, best };
 }
 
-// A plan that removes this species' inbreeding risks (and close kin) by
-// moving as few animals as possible. Every candidate move is scored on:
-//   - related pairs fixed (and never one created);
-//   - breeding: where the animal goes, the new fertile, unrelated
-//     male x female pairs it forms (a habitat with no breeding pair that
-//     gets one counts extra), the best expected young there; where it comes
-//     from, a habitat must not lose its last breeding pair;
-//   - no groups of only males or only females (two or more adults);
-//   - the player's habitat assignments (only the species' own habitats,
-//     never another species' ones).
-// Falls back to the trade centre only when `allowTrade` is set. Returns
-// [{ id, to, reason }].
 // The kin model of one species only (its pairs, its lineage): simulating a
 // move there is fast even in a zoo of hundreds of animals.
 function speciesModel(model, species) {
@@ -603,6 +626,19 @@ function speciesModel(model, species) {
     return buildKinModel(Object.assign({}, snap, { animals: snap.animals.filter(a => a.species === species), normalized: true }), modelOptsOf(model));
 }
 
+// A plan that removes this species' inbreeding risks (and close kin) by
+// moving as few animals as possible. A move never creates a related pair
+// and never takes a habitat's last breeding pair away; among the rest each
+// is scored on:
+//   - related pairs fixed;
+//   - breeding: where the animal goes, the new fertile, unrelated
+//     male x female pairs it forms (a habitat with no breeding pair that
+//     gets one counts extra), the best expected young there;
+//   - no groups of only males or only females (two or more adults);
+//   - the player's habitat assignments (only the species' own habitats,
+//     never another species' ones).
+// Only a move scoring above zero is made. Falls back to the trade centre
+// only when `allowTrade` is set. Returns [{ id, to, reason }].
 export function suggestPlan(model, species, destinations, { maxMoves = 12, allowTrade = false, includeKin = true, assignments = null } = {}) {
     if (!model || !species) return [];
     model = speciesModel(model, species);
@@ -613,7 +649,8 @@ export function suggestPlan(model, species, destinations, { maxMoves = 12, allow
     // any, and never a habitat assigned to other species
     const assign = normalizeAssignments(assignments);
     const mine = assignedHabitatsOf(assign, species);
-    if (mine.length) habitatsOk = mine.filter(h => !options || !options[h] || options[h].ok);
+    // a habitat the game's check did not list is not suitable (habitatOk)
+    if (mine.length) habitatsOk = mine.filter(h => !options || (options[h] && options[h].ok));
     else habitatsOk = habitatsOk.filter(h => habitatAllowedFor(assign, h, species));
     let plan = [];
     const tried = new Set();
@@ -649,30 +686,29 @@ export function suggestPlan(model, species, destinations, { maxMoves = 12, allow
                 const createdBad = impact.created.filter(p => watched(p.severity)).length;
                 const fixedBad = impact.fixed.filter(p => watched(p.severity)).length;
                 if (fixedBad === 0 || createdBad > 0) continue;
+                const fromAfter = from ? breedingPairs(after, from, species) : null;
+                if (fromBefore && fromBefore.pairs > 0 && fromAfter.pairs === 0) continue;
                 movable = true;
                 const toBefore = to === TRADE ? null : breedingPairs(current, to, species);
                 const toAfter = to === TRADE ? null : breedingPairs(after, to, species);
-                const fromAfter = from ? breedingPairs(after, from, species) : null;
                 const gained = toAfter ? Math.max(0, toAfter.pairs - toBefore.pairs) : 0;
                 const firstPair = !!toAfter && toBefore.pairs === 0 && toAfter.pairs > 0;
-                const breaksOrigin = !!fromBefore && fromBefore.pairs > 0 && fromAfter.pairs === 0;
-                // breeding across the two habitats the move touches: pairs
-                // gained or lost, and groups of only males or only females
-                // pairs near the end of their fertile years count half
-                const pairsOf = b => (b ? b.weighted : 0);
+                // breeding across the two habitats the move touches: breeders with an
+                // unrelated partner, two to a pair (one adult leaving a crowded group
+                // costs one breeder, not every pair it could make), and groups of
+                // only males or only females
+                const pairsOf = b => (b ? b.bred / 2 : 0);
                 const pairGain = (pairsOf(toAfter) - pairsOf(toBefore)) + (pairsOf(fromAfter) - pairsOf(fromBefore));
                 const singleSex = b => (!!b && b.males + b.females >= 2 && (b.males === 0 || b.females === 0)) ? 1 : 0;
                 const singleSexDelta = singleSex(toAfter) - singleSex(toBefore) + singleSex(fromAfter) - singleSex(fromBefore);
                 const score = fixedBad * 60 - createdBad * 200
-                    + pairGain * 25 + (firstPair ? 30 : 0) - (breaksOrigin ? 40 : 0)
+                    + pairGain * 25 + (firstPair ? 30 : 0)
                     - singleSexDelta * 60
                     + (toAfter && toAfter.best != null && gained ? toAfter.best / 20 : 0)
                     - (to === TRADE ? 50 : 0)
                     // between equal moves, the less crowded habitat
                     - (toAfter ? (toAfter.males + toAfter.females) * 0.1 : 0);
-                if (!chosen || score > chosen.score) {
-                    chosen = { a, to, score, fixedBad, gained, firstPair, breaksOrigin, fromName: from ? destName(model, from, destinations) : '' };
-                }
+                if (score > 0 && (!chosen || score > chosen.score)) chosen = { a, to, score, fixedBad, gained, firstPair };
             }
             // no good move for this animal at all: do not try it again
             if (!movable) tried.add(a.id);
@@ -684,12 +720,11 @@ export function suggestPlan(model, species, destinations, { maxMoves = 12, allow
         else if (chosen.gained) {
             const mate = a.sex === Sex.Male ? 'female' : a.sex === Sex.Female ? 'male' : 'partner';
             parts.push(chosen.firstPair
-                ? `gives ${destName(model, chosen.to, destinations)} its first breeding pair (an unrelated fertile ${mate})`
+                ? `gives ${placeName(model, chosen.to, destinations)} its first breeding pair (an unrelated fertile ${mate})`
                 : `${chosen.gained} more breeding pair${chosen.gained > 1 ? 's' : ''} there (unrelated fertile ${mate}${chosen.gained > 1 ? 's' : ''})`);
         }
         else if (!fertileAdult(a)) parts.push(notBreedingText(a));
         else parts.push(`no unrelated fertile ${a.sex === Sex.Male ? 'female' : a.sex === Sex.Female ? 'male' : 'partner'} there yet`);
-        if (chosen.breaksOrigin) parts.push(`${chosen.fromName} loses its last breeding pair`);
         plan = plan.concat([{ id: a.id, to: chosen.to, reason: parts.join('; ') }]);
     }
     return plan;
@@ -700,8 +735,9 @@ export function moveText(model, m, destinations) {
     const a = model && model.animals.get(String(m.id));
     if (!a) return String(m.id);
     const sym = a.sex === Sex.Male ? '♂' : a.sex === Sex.Female ? '♀' : '';
-    const from = a.hab ? ((model.habitats.get(a.hab) || {}).name || a.loc) : (a.lt === 'trade' ? 'Trade centre' : (a.loc || 'elsewhere'));
-    return `${a.name} ${sym}: ${from} → ${destName(model, m.to, destinations)}`;
+    const home = homeOf(a);
+    const from = home === AWAY ? a.loc || placeName(model, AWAY) : placeName(model, home, destinations);
+    return `${a.name} ${sym}: ${from} → ${placeName(model, m.to, destinations)}`;
 }
 
 export { normalizeSnapshot };

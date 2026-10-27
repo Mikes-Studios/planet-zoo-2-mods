@@ -7,6 +7,7 @@
 import {
     Sex, habitatsAtRisk, habitatSummary, offspringScore, predictOffspring, relationWord, severityRank,
 } from './kincore.js';
+import { placeName } from './kinboardcore.js';
 
 // Severities a habitat counts (distant pairs are only shown in the matrix).
 export const COUNTED = ['risk', 'kin', 'future', 'held', 'covered'];
@@ -58,7 +59,7 @@ export function plannerHabitats(model, { showCovered = true } = {}) {
         const counts = visibleCounts(h.counts, showCovered);
         let animals = 0;
         for (const sp of h.species) animals += sp.animals.length;
-        return { id: h.id, name: h.name || 'Unnamed habitat', kind: h.kind, counts, animals, species: h.species.length, worst: worstOf(counts) };
+        return { id: h.id, name: h.name || placeName(model, h.id), kind: h.kind, counts, animals, species: h.species.length, worst: worstOf(counts) };
     }).filter(h => h.animals > 0);
 }
 
@@ -83,7 +84,7 @@ export function overviewGroups(model, { showCovered = true } = {}) {
     for (const [hab, pairs] of byHab) {
         const s = model.habitatSummaries.get(hab);
         const counts = visibleCounts(s ? s.counts : null, showCovered);
-        groups.push({ hab, name: (s && s.name) || hab, kind: s ? s.kind : 'habitat', pairs, counts, worst: worstOf(counts) });
+        groups.push({ hab, name: (s && s.name) || placeName(model, hab), kind: s ? s.kind : 'habitat', pairs, counts, worst: worstOf(counts) });
     }
     return groups.sort((x, y) => severityRank(y.worst) - severityRank(x.worst)
         || y.counts.risk - x.counts.risk || y.counts.kin - x.counts.kin || y.counts.future - x.counts.future

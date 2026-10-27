@@ -1,0 +1,1158 @@
+{
+ "from": "trace load 0 (18:21:19.301) until 18:22:58",
+ "sandbox": true,
+ "habitats": [
+  "Hab 1",
+  "Hab 2"
+ ],
+ "assignments": {
+  "Giraffe_Masai": [
+   "Hab 1",
+   "Hab 2"
+  ],
+  "Giraffe_Reticulated": [
+   "Hab 1",
+   "Hab 2"
+  ]
+ },
+ "speciesFacts": {
+  "Giraffe_Masai": {
+   "maturity": 4,
+   "infertility": null,
+   "life": null
+  },
+  "Giraffe_Reticulated": {
+   "maturity": 4,
+   "infertility": null,
+   "life": null
+  }
+ },
+ "view": {},
+ "info": {
+  "Giraffe_Masai": {
+   "mating": "mixed",
+   "social": {
+    "min": 3,
+    "max": 12
+   },
+   "groups": [
+    {
+     "kind": "mixed",
+     "m": 2,
+     "f": 4
+    },
+    {
+     "kind": "maleBachelor",
+     "m": 4,
+     "f": 0
+    },
+    {
+     "kind": "femaleBachelor",
+     "m": 0,
+     "f": 4
+    }
+   ]
+  },
+  "Giraffe_Reticulated": {
+   "mating": "mixed",
+   "social": {
+    "min": 3,
+    "max": 12
+   },
+   "groups": [
+    {
+     "kind": "mixed",
+     "m": 2,
+     "f": 4
+    },
+    {
+     "kind": "maleBachelor",
+     "m": 4,
+     "f": 0
+    },
+    {
+     "kind": "femaleBachelor",
+     "m": 0,
+     "f": 4
+    }
+   ]
+  }
+ },
+ "animals": [
+  {
+   "id": "Z0",
+   "key": "animal_Z0",
+   "guid": "g_Z0",
+   "name": "Ramatla",
+   "species": "Giraffe_Masai",
+   "sex": 1,
+   "juv": true,
+   "contra": false,
+   "infertile": false,
+   "preg": false,
+   "age": 3.6,
+   "hab": "Hab 1",
+   "lt": "habitat",
+   "par": [
+    "01a1606b-6046-76ec-b41f-037b2b280c76",
+    "g_Z17"
+   ],
+   "genes": {
+    "F": "AAAAAAaaaaaA",
+    "I": "AAAAAAaaaaAA",
+    "S": "AAAAAAAAAaaa",
+    "L": "AAAAAaaaaaaa"
+   }
+  },
+  {
+   "id": "Z1",
+   "key": "animal_Z1",
+   "guid": "g_Z1",
+   "name": "Gugulethu",
+   "species": "Giraffe_Reticulated",
+   "sex": 0,
+   "juv": true,
+   "contra": false,
+   "infertile": false,
+   "preg": false,
+   "age": 3.6,
+   "hab": "Hab 1",
+   "lt": "habitat",
+   "par": [
+    "g_Z25",
+    "g_Z31"
+   ],
+   "genes": {
+    "F": "AAAAAAaaaaAA",
+    "I": "AAAAAAaaaaaa",
+    "S": "AAAAAaaaaaaa",
+    "L": "AAAAAAaaaaaa"
+   }
+  },
+  {
+   "id": "Z2",
+   "key": "animal_Z2",
+   "guid": "g_Z2",
+   "name": "Ayabonga",
+   "species": "Giraffe_Reticulated",
+   "sex": 0,
+   "juv": true,
+   "contra": false,
+   "infertile": false,
+   "preg": false,
+   "age": 3.4,
+   "hab": "Hab 1",
+   "lt": "habitat",
+   "par": [
+    "g_Z31",
+    "g_Z21"
+   ],
+   "genes": {
+    "F": "AAAAAAaaaaaA",
+    "I": "AAAAAAaaaaaA",
+    "S": "AAAAaaaaaaaa",
+    "L": "AAAAAAAAAAaa"
+   }
+  },
+  {
+   "id": "Z3",
+   "key": "animal_Z3",
+   "guid": "g_Z3",
+   "name": "Lwazi",
+   "species": "Giraffe_Masai",
+   "sex": 0,
+   "juv": true,
+   "contra": false,
+   "infertile": false,
+   "preg": false,
+   "age": 2.4,
+   "hab": "Hab 1",
+   "lt": "habitat",
+   "par": [
+    "01a1606b-6046-76ec-b41f-037b2b280c76",
+    "01a163a9-8be8-7441-8fb1-88df02b85694"
+   ],
+   "genes": {
+    "F": "AAAAAAaaaaaA",
+    "I": "AAAAAAaaaaaA",
+    "S": "AAAAAAAaaaaa",
+    "L": "AAAAAaaaaaaa"
+   }
+  },
+  {
+   "id": "Z4",
+   "key": "animal_Z4",
+   "guid": "g_Z4",
+   "name": "Chibeka",
+   "species": "Giraffe_Masai",
+   "sex": 1,
+   "juv": false,
+   "contra": false,
+   "infertile": false,
+   "preg": true,
+   "age": 11.6,
+   "hab": "Hab 1",
+   "lt": "habitat",
+   "par": [
+    "01a15d50-b2bd-75a2-a490-afbe2496f2a6",
+    "01a15d79-bfc2-777c-b64b-56d734ae30f4"
+   ],
+   "genes": {
+    "F": "AAAAAAaaaaaA",
+    "I": "AAAAAAaaaaAA",
+    "S": "AAAAAAaaaaaa",
+    "L": "AAAAaaaaaaaa"
+   }
+  },
+  {
+   "id": "Z5",
+   "key": "animal_Z5",
+   "guid": "g_Z5",
+   "name": "Nobantu",
+   "species": "Giraffe_Masai",
+   "sex": 1,
+   "juv": true,
+   "contra": false,
+   "infertile": false,
+   "preg": false,
+   "age": 1.9,
+   "hab": "Hab 1",
+   "lt": "habitat",
+   "par": [
+    "01a15b5c-b79c-744c-bbb3-f8a935d08322",
+    "01a1606b-6046-76ec-b41f-037b2b280c76"
+   ],
+   "genes": {
+    "F": "AAAAAAaaaaAA",
+    "I": "AAAAAAaaaaaA",
+    "S": "AAAAAaaaaaaa",
+    "L": "AAAAaaaaaaaa"
+   }
+  },
+  {
+   "id": "Z6",
+   "key": "animal_Z6",
+   "guid": "g_Z6",
+   "name": "Khanyiswa",
+   "species": "Giraffe_Reticulated",
+   "sex": 1,
+   "juv": true,
+   "contra": false,
+   "infertile": false,
+   "preg": false,
+   "age": 1.6,
+   "hab": "Hab 1",
+   "lt": "habitat",
+   "par": [
+    "g_Z33",
+    "g_Z31"
+   ],
+   "genes": {
+    "F": "AAAAAAaaaaaA",
+    "I": "AAAAAAaaaaAA",
+    "S": "AAAAaaaaaaaa",
+    "L": "AAAAAAAAAaaa"
+   }
+  },
+  {
+   "id": "Z7",
+   "key": "animal_Z7",
+   "guid": "g_Z7",
+   "name": "Vimbainashe",
+   "species": "Giraffe_Reticulated",
+   "sex": 1,
+   "juv": true,
+   "contra": false,
+   "infertile": false,
+   "preg": false,
+   "age": 3.8,
+   "hab": "Hab 1",
+   "lt": "habitat",
+   "par": [
+    "g_Z35",
+    "g_Z31"
+   ],
+   "genes": {
+    "F": "AAAAAAaaaaAA",
+    "I": "AAAAAAaaaaAA",
+    "S": "AAAAAaaaaaaa",
+    "L": "AAAAAAAaaaaa"
+   }
+  },
+  {
+   "id": "Z8",
+   "key": "animal_Z8",
+   "guid": "g_Z8",
+   "name": "Ntsumi",
+   "species": "Giraffe_Masai",
+   "sex": 1,
+   "juv": true,
+   "contra": false,
+   "infertile": false,
+   "preg": false,
+   "age": 2.5,
+   "hab": "Hab 1",
+   "lt": "habitat",
+   "par": [
+    "g_Z4",
+    "01a1606b-6046-76ec-b41f-037b2b280c76"
+   ],
+   "genes": {
+    "F": "AAAAAAaaaaAA",
+    "I": "AAAAAAaaaaaA",
+    "S": "AAAAAAAaaaaa",
+    "L": "AAAaaaaaaaaa"
+   }
+  },
+  {
+   "id": "Z9",
+   "key": "animal_Z9",
+   "guid": "g_Z9",
+   "name": "Bokamoso",
+   "species": "Giraffe_Masai",
+   "sex": 0,
+   "juv": false,
+   "contra": false,
+   "infertile": false,
+   "preg": false,
+   "age": 10.2,
+   "hab": "Hab 1",
+   "lt": "habitat",
+   "par": [
+    "01a15b31-3559-73c4-a006-c155547139c1",
+    "g_Z36"
+   ],
+   "genes": {
+    "F": "AAAAAAaaaaAA",
+    "I": "AAAAAAaaaAAA",
+    "S": "AAAAaaaaaaaa",
+    "L": "AAAAAAAaaaaa"
+   }
+  },
+  {
+   "id": "Z10",
+   "key": "animal_Z10",
+   "guid": "g_Z10",
+   "name": "Makiese",
+   "species": "Giraffe_Reticulated",
+   "sex": 1,
+   "juv": true,
+   "contra": false,
+   "infertile": false,
+   "preg": false,
+   "age": 3.8,
+   "hab": "Hab 1",
+   "lt": "habitat",
+   "par": [
+    "g_Z31",
+    "g_Z23"
+   ],
+   "genes": {
+    "F": "AAAAAAaaaaaA",
+    "I": "AAAAAAaaaaAA",
+    "S": "AAAAaaaaaaaa",
+    "L": "AAAAAAAAAaaa"
+   }
+  },
+  {
+   "id": "Z11",
+   "key": "animal_Z11",
+   "guid": "g_Z11",
+   "name": "Aletta",
+   "species": "Giraffe_Masai",
+   "sex": 1,
+   "juv": false,
+   "contra": false,
+   "infertile": false,
+   "preg": false,
+   "age": 6.8,
+   "hab": "Hab 1",
+   "lt": "habitat",
+   "par": [
+    "01a156de-3fea-7883-8e83-c531849fb0ab",
+    "01a161ad-54b5-751c-8bf8-43099559c989"
+   ],
+   "genes": {
+    "F": "AAAAAAaaaaaa",
+    "I": "AAAAAAaaaaaA",
+    "S": "AAAAAAAaaaaa",
+    "L": "AAAAaaaaaaaa"
+   }
+  },
+  {
+   "id": "Z12",
+   "key": "animal_Z12",
+   "guid": "g_Z12",
+   "name": "Cezanne",
+   "species": "Giraffe_Masai",
+   "sex": 1,
+   "juv": false,
+   "contra": false,
+   "infertile": false,
+   "preg": false,
+   "age": 8.3,
+   "hab": "Hab 1",
+   "lt": "habitat",
+   "par": [
+    "01a15b5c-b79c-744c-bbb3-f8a935d08322",
+    "01a1606b-6046-76ec-b41f-037b2b280c76"
+   ],
+   "genes": {
+    "F": "AAAAAAaaAAAA",
+    "I": "AAAAAAaaaaaa",
+    "S": "AAAAAAaaaaaa",
+    "L": "AAAAAaaaaaaa"
+   }
+  },
+  {
+   "id": "Z13",
+   "key": "animal_Z13",
+   "guid": "g_Z13",
+   "name": "Boiketlo",
+   "species": "Giraffe_Masai",
+   "sex": 1,
+   "juv": false,
+   "contra": false,
+   "infertile": false,
+   "preg": false,
+   "age": 6.9,
+   "hab": "Hab 1",
+   "lt": "habitat",
+   "par": [
+    "01a16164-143e-7236-b7a1-e2436a348b13",
+    "01a1637f-f4f1-7cd0-af72-f5696c429354"
+   ],
+   "genes": {
+    "F": "AAAAAAaaaaaA",
+    "I": "AAAAAAaaaAAA",
+    "S": "AAAAAAAaaaaa",
+    "L": "AAAAaaaaaaaa"
+   }
+  },
+  {
+   "id": "Z14",
+   "key": "animal_Z14",
+   "guid": "g_Z14",
+   "name": "Boipuso",
+   "species": "Giraffe_Reticulated",
+   "sex": 0,
+   "juv": true,
+   "contra": false,
+   "infertile": false,
+   "preg": false,
+   "age": 3.2,
+   "hab": "Hab 1",
+   "lt": "habitat",
+   "par": [
+    "g_Z31",
+    "g_Z38"
+   ],
+   "genes": {
+    "F": "AAAAAAaaaaaA",
+    "I": "AAAAAAaaaaaa",
+    "S": "AAAAAaaaaaaa",
+    "L": "AAAAAAAaaaaa"
+   }
+  },
+  {
+   "id": "Z15",
+   "key": "animal_Z15",
+   "guid": "g_Z15",
+   "name": "Nomlanga",
+   "species": "Giraffe_Masai",
+   "sex": 0,
+   "juv": true,
+   "contra": false,
+   "infertile": false,
+   "preg": false,
+   "age": 0.9,
+   "hab": "Hab 1",
+   "lt": "habitat",
+   "par": [
+    "01a16163-fb7e-72ea-959f-3c327ba1edd7",
+    "g_Z11"
+   ],
+   "genes": {
+    "F": "AAAAAAaaaaaa",
+    "I": "AAAAAAaaAAAA",
+    "S": "AAAAaaaaaaaa",
+    "L": "AAAAAaaaaaaa"
+   }
+  },
+  {
+   "id": "Z16",
+   "key": "animal_Z16",
+   "guid": "g_Z16",
+   "name": "Nobantu",
+   "species": "Giraffe_Reticulated",
+   "sex": 1,
+   "juv": true,
+   "contra": false,
+   "infertile": false,
+   "preg": false,
+   "age": 1.8,
+   "hab": "Hab 1",
+   "lt": "habitat",
+   "par": [
+    "g_Z31",
+    "g_Z27"
+   ],
+   "genes": {
+    "F": "AAAAAAaaaaAA",
+    "I": "AAAAAAaaaaAA",
+    "S": "AAAAAaaaaaaa",
+    "L": "AAAAAAAaaaaa"
+   }
+  },
+  {
+   "id": "Z17",
+   "key": "animal_Z17",
+   "guid": "g_Z17",
+   "name": "Thembile",
+   "species": "Giraffe_Masai",
+   "sex": 1,
+   "juv": false,
+   "contra": false,
+   "infertile": false,
+   "preg": true,
+   "age": 8,
+   "hab": "Hab 1",
+   "lt": "habitat",
+   "par": [
+    "01a156de-3fea-7883-8e83-c531849fb0ab",
+    "01a15b5c-b79c-744c-bbb3-f8a935d08322"
+   ],
+   "genes": {
+    "F": "AAAAAAaaaaaA",
+    "I": "AAAAAAaaaaAA",
+    "S": "AAAAAAAAaaaa",
+    "L": "AAAAAAaaaaaa"
+   }
+  },
+  {
+   "id": "Z18",
+   "key": "animal_Z18",
+   "guid": "g_Z18",
+   "name": "Khanyiswa",
+   "species": "Giraffe_Reticulated",
+   "sex": 1,
+   "juv": true,
+   "contra": false,
+   "infertile": false,
+   "preg": false,
+   "age": 0.7,
+   "hab": "Hab 2",
+   "lt": "habitat",
+   "par": [
+    "g_Z31",
+    "g_Z23"
+   ],
+   "genes": {
+    "F": "AAAAAAaaaaaA",
+    "I": "AAAAAAaaaaaA",
+    "S": "AAAAAAaaaaaa",
+    "L": "AAAAAAAAAaaa"
+   }
+  },
+  {
+   "id": "Z19",
+   "key": "animal_Z19",
+   "guid": "g_Z19",
+   "name": "Simbarashe",
+   "species": "Giraffe_Reticulated",
+   "sex": 0,
+   "juv": true,
+   "contra": false,
+   "infertile": false,
+   "preg": false,
+   "age": 0.5,
+   "hab": "Hab 2",
+   "lt": "habitat",
+   "par": [
+    "g_Z25",
+    "g_Z31"
+   ],
+   "genes": {
+    "F": "AAAAAAaaaaaA",
+    "I": "AAAAAAaaaAAA",
+    "S": "AAAAaaaaaaaa",
+    "L": "AAAAAAaaaaaa"
+   }
+  },
+  {
+   "id": "Z20",
+   "key": "animal_Z20",
+   "guid": "g_Z20",
+   "name": "Hamza",
+   "species": "Giraffe_Reticulated",
+   "sex": 0,
+   "juv": true,
+   "contra": false,
+   "infertile": false,
+   "preg": false,
+   "age": 0.6,
+   "hab": "Hab 2",
+   "lt": "habitat",
+   "par": [
+    "g_Z35",
+    "g_Z31"
+   ],
+   "genes": {
+    "F": "AAAAAAaaaaAA",
+    "I": "AAAAAAaaaaaa",
+    "S": "AAAAaaaaaaaa",
+    "L": "AAAAAAAaaaaa"
+   }
+  },
+  {
+   "id": "Z21",
+   "key": "animal_Z21",
+   "guid": "g_Z21",
+   "name": "Annely",
+   "species": "Giraffe_Reticulated",
+   "sex": 1,
+   "juv": false,
+   "contra": false,
+   "infertile": false,
+   "preg": false,
+   "age": 8.9,
+   "hab": "Hab 2",
+   "lt": "habitat",
+   "par": [
+    "g_Z33",
+    "01a161dc-9e77-712f-aeae-7db77e677b39"
+   ],
+   "genes": {
+    "F": "AAAAAAaaaAAA",
+    "I": "AAAAAAaaaaaA",
+    "S": "AAAAaaaaaaaa",
+    "L": "AAAAAAAAAaaa"
+   }
+  },
+  {
+   "id": "Z22",
+   "key": "animal_Z22",
+   "guid": "g_Z22",
+   "name": "Alebakwe",
+   "species": "Giraffe_Masai",
+   "sex": 0,
+   "juv": true,
+   "contra": false,
+   "infertile": false,
+   "preg": false,
+   "age": 1.1,
+   "hab": "Hab 2",
+   "lt": "habitat",
+   "par": [
+    "g_Z30",
+    "01a1641f-215c-7328-872e-5982fad61547"
+   ],
+   "genes": {
+    "F": "AAAAAAaaaaaa",
+    "I": "AAAAAAaaaaAA",
+    "S": "AAAAAaaaaaaa",
+    "L": "AAAAAAaaaaaa"
+   }
+  },
+  {
+   "id": "Z23",
+   "key": "animal_Z23",
+   "guid": "g_Z23",
+   "name": "Rukudzo",
+   "species": "Giraffe_Reticulated",
+   "sex": 1,
+   "juv": false,
+   "contra": false,
+   "infertile": false,
+   "preg": false,
+   "age": 9.4,
+   "hab": "Hab 2",
+   "lt": "habitat",
+   "par": [
+    "g_Z40",
+    "01a16328-3c25-7289-b685-3bc360a235cc"
+   ],
+   "genes": {
+    "F": "AAAAAAaaaaAA",
+    "I": "AAAAAAaaaaaA",
+    "S": "AAAAAaaaaaaa",
+    "L": "AAAAAAAAAaaa"
+   }
+  },
+  {
+   "id": "Z24",
+   "key": "animal_Z24",
+   "guid": "g_Z24",
+   "name": "Thembile",
+   "species": "Giraffe_Reticulated",
+   "sex": 1,
+   "juv": false,
+   "contra": false,
+   "infertile": false,
+   "preg": false,
+   "age": 5.4,
+   "hab": "",
+   "lt": "trade",
+   "par": [
+    "g_Z33",
+    "01a161dc-9e77-712f-aeae-7db77e677b39"
+   ],
+   "genes": {
+    "F": "AAAAAAaaaAAA",
+    "I": "AAAAAAaaaaAA",
+    "S": "AAAAAAaaaaaa",
+    "L": "AAAAAAaaaaaa"
+   }
+  },
+  {
+   "id": "Z25",
+   "key": "animal_Z25",
+   "guid": "g_Z25",
+   "name": "Brielle",
+   "species": "Giraffe_Reticulated",
+   "sex": 1,
+   "juv": false,
+   "contra": false,
+   "infertile": false,
+   "preg": false,
+   "age": 12,
+   "hab": "Hab 2",
+   "lt": "habitat",
+   "par": [
+    "01a15908-06ec-7e62-8657-74447c9a3c99",
+    "01a15db8-d9e3-71af-9872-47a6ce5171b5"
+   ],
+   "genes": {
+    "F": "AAAAAAaaaaaA",
+    "I": "AAAAAAaaaaAA",
+    "S": "AAAAAaaaaaaa",
+    "L": "AAAAAaaaaaaa"
+   }
+  },
+  {
+   "id": "Z26",
+   "key": "animal_Z26",
+   "guid": "g_Z26",
+   "name": "Bokamoso",
+   "species": "Giraffe_Reticulated",
+   "sex": 0,
+   "juv": true,
+   "contra": false,
+   "infertile": false,
+   "preg": false,
+   "age": 2.5,
+   "hab": "Hab 2",
+   "lt": "habitat",
+   "par": [
+    "01a160b1-1f72-7ec9-b66b-5147fced59cb",
+    "g_Z40"
+   ],
+   "genes": {
+    "F": "AAAAAAaaaaaA",
+    "I": "AAAAAAaaaaaA",
+    "S": "AAAaaaaaaaaa",
+    "L": "AAAAAAAAaaaa"
+   }
+  },
+  {
+   "id": "Z27",
+   "key": "animal_Z27",
+   "guid": "g_Z27",
+   "name": "Zendaya",
+   "species": "Giraffe_Reticulated",
+   "sex": 1,
+   "juv": false,
+   "contra": false,
+   "infertile": false,
+   "preg": false,
+   "age": 12.9,
+   "hab": "Hab 2",
+   "lt": "habitat",
+   "par": [
+    "01a154f9-710c-7469-9b40-fe06f8884c9d",
+    "g_Z40"
+   ],
+   "genes": {
+    "F": "AAAAAAaaaaAA",
+    "I": "AAAAAAaaaaaA",
+    "S": "AAAAaaaaaaaa",
+    "L": "AAAAAAAaaaaa"
+   }
+  },
+  {
+   "id": "Z28",
+   "key": "animal_Z28",
+   "guid": "g_Z28",
+   "name": "Makiese",
+   "species": "Giraffe_Masai",
+   "sex": 1,
+   "juv": true,
+   "contra": false,
+   "infertile": false,
+   "preg": false,
+   "age": 0.2,
+   "hab": "Hab 2",
+   "lt": "habitat",
+   "par": [
+    "g_Z36",
+    "01a1606b-6046-76ec-b41f-037b2b280c76"
+   ],
+   "genes": {
+    "F": "AAAAAAaaaaAA",
+    "I": "AAAAAAaaaaaA",
+    "S": "AAAAAAaaaaaa",
+    "L": "AAAAAaaaaaaa"
+   }
+  },
+  {
+   "id": "Z29",
+   "key": "animal_Z29",
+   "guid": "g_Z29",
+   "name": "Kalumba",
+   "species": "Giraffe_Reticulated",
+   "sex": 0,
+   "juv": true,
+   "contra": false,
+   "infertile": false,
+   "preg": false,
+   "age": 0.2,
+   "hab": "Hab 2",
+   "lt": "habitat",
+   "par": [
+    "g_Z31",
+    "g_Z21"
+   ],
+   "genes": {
+    "F": "AAAAAAaaaaAA",
+    "I": "AAAAAAaaaAAA",
+    "S": "AAAAaaaaaaaa",
+    "L": "AAAAAAAAAAaa"
+   }
+  },
+  {
+   "id": "Z30",
+   "key": "animal_Z30",
+   "guid": "g_Z30",
+   "name": "Ntsumi",
+   "species": "Giraffe_Masai",
+   "sex": 1,
+   "juv": false,
+   "contra": false,
+   "infertile": false,
+   "preg": false,
+   "age": 11.3,
+   "hab": "Hab 2",
+   "lt": "habitat",
+   "par": [
+    "01a15b31-3559-73c4-a006-c155547139c1",
+    "01a15be5-41a8-7447-a219-414572f73b92"
+   ],
+   "genes": {
+    "F": "AAAAAAaaaaAA",
+    "I": "AAAAAAaaaaaA",
+    "S": "AAAAaaaaaaaa",
+    "L": "AAAAAAAaaaaa"
+   }
+  },
+  {
+   "id": "Z31",
+   "key": "animal_Z31",
+   "guid": "g_Z31",
+   "name": "Gugulethu",
+   "species": "Giraffe_Reticulated",
+   "sex": 0,
+   "juv": false,
+   "contra": false,
+   "infertile": false,
+   "preg": false,
+   "age": 14.6,
+   "hab": "Hab 2",
+   "lt": "habitat",
+   "par": [
+    "01a159ea-5864-7a97-9dbb-cc1635496fcb",
+    "01a16149-b2a3-7167-a300-414525c544d9"
+   ],
+   "genes": {
+    "F": "AAAAAAaaaaaa",
+    "I": "AAAAAAaaaaAA",
+    "S": "AAAAAaaaaaaa",
+    "L": "AAAAAAAAaaaa"
+   }
+  },
+  {
+   "id": "Z32",
+   "key": "animal_Z32",
+   "guid": "g_Z32",
+   "name": "Kananelo",
+   "species": "Giraffe_Masai",
+   "sex": 0,
+   "juv": true,
+   "contra": false,
+   "infertile": false,
+   "preg": false,
+   "age": 1.4,
+   "hab": "Hab 2",
+   "lt": "habitat",
+   "par": [
+    "01a1606b-6046-76ec-b41f-037b2b280c76",
+    "g_Z13"
+   ],
+   "genes": {
+    "F": "AAAAAAaaaaaA",
+    "I": "AAAAAAaaaaaA",
+    "S": "AAAAAAAaaaaa",
+    "L": "AAAAAaaaaaaa"
+   }
+  },
+  {
+   "id": "Z33",
+   "key": "animal_Z33",
+   "guid": "g_Z33",
+   "name": "Basetsana",
+   "species": "Giraffe_Reticulated",
+   "sex": 1,
+   "juv": false,
+   "contra": false,
+   "infertile": false,
+   "preg": false,
+   "age": 18.4,
+   "hab": "Hab 2",
+   "lt": "habitat",
+   "par": [
+    "01a15db8-d9e3-71af-9872-47a6ce5171b5",
+    "01a15e44-b3d5-7567-ba3e-f6601b74965c"
+   ],
+   "genes": {
+    "F": "AAAAAAaaaaAA",
+    "I": "AAAAAAaaaAAA",
+    "S": "AAAAAaaaaaaa",
+    "L": "AAAAAAAaaaaa"
+   }
+  },
+  {
+   "id": "Z34",
+   "key": "animal_Z34",
+   "guid": "g_Z34",
+   "name": "Mkhokeli",
+   "species": "Giraffe_Masai",
+   "sex": 0,
+   "juv": false,
+   "contra": false,
+   "infertile": false,
+   "preg": false,
+   "age": 4.2,
+   "hab": "Hab 2",
+   "lt": "habitat",
+   "par": [
+    "01a156de-3fea-7883-8e83-c531849fb0ab",
+    "g_Z12"
+   ],
+   "genes": {
+    "F": "AAAAAAaaaaaa",
+    "I": "AAAAAAaaaaaA",
+    "S": "AAAAAAAAAaaa",
+    "L": "AAAAAaaaaaaa"
+   }
+  },
+  {
+   "id": "Z35",
+   "key": "animal_Z35",
+   "guid": "g_Z35",
+   "name": "Adowa",
+   "species": "Giraffe_Reticulated",
+   "sex": 1,
+   "juv": false,
+   "contra": false,
+   "infertile": false,
+   "preg": false,
+   "age": 9.7,
+   "hab": "Hab 2",
+   "lt": "habitat",
+   "par": [
+    "01a15908-06ec-7e62-8657-74447c9a3c99",
+    "01a15f78-9e44-7a4a-bda9-6866e309b2e6"
+   ],
+   "genes": {
+    "F": "AAAAAAaaaaaA",
+    "I": "AAAAAAaaaaaA",
+    "S": "AAAAaaaaaaaa",
+    "L": "AAAAAAaaaaaa"
+   }
+  },
+  {
+   "id": "Z36",
+   "key": "animal_Z36",
+   "guid": "g_Z36",
+   "name": "Adowa",
+   "species": "Giraffe_Masai",
+   "sex": 1,
+   "juv": false,
+   "contra": false,
+   "infertile": false,
+   "preg": false,
+   "age": 30.6,
+   "hab": "Hab 2",
+   "lt": "habitat",
+   "par": [
+    "01a14c7d-59ff-7b1b-b499-0af29f09cb3a",
+    "01a14c7e-9d46-772e-ae0c-3f1386fc4c84"
+   ],
+   "genes": {
+    "F": "AAAAAAaaaAAA",
+    "I": "AAAAAAaaaaaa",
+    "S": "AAAAaaaaaaaa",
+    "L": "AAAAAaaaaaaa"
+   }
+  },
+  {
+   "id": "Z37",
+   "key": "animal_Z37",
+   "guid": "g_Z37",
+   "name": "Tjaart",
+   "species": "Giraffe_Masai",
+   "sex": 0,
+   "juv": true,
+   "contra": false,
+   "infertile": false,
+   "preg": false,
+   "age": 3.8,
+   "hab": "Hab 2",
+   "lt": "habitat",
+   "par": [
+    "01a156de-3fea-7883-8e83-c531849fb0ab",
+    "01a16188-e96c-75d7-b3c8-1eb4d30957e0"
+   ],
+   "genes": {
+    "F": "AAAAAAaaaaaA",
+    "I": "AAAAAAaaaaaA",
+    "S": "AAAAAAAAaaaa",
+    "L": "AAAaaaaaaaaa"
+   }
+  },
+  {
+   "id": "Z38",
+   "key": "animal_Z38",
+   "guid": "g_Z38",
+   "name": "Nthabiseng",
+   "species": "Giraffe_Reticulated",
+   "sex": 1,
+   "juv": false,
+   "contra": false,
+   "infertile": false,
+   "preg": true,
+   "age": 9.1,
+   "hab": "Hab 2",
+   "lt": "habitat",
+   "par": [
+    "01a15f78-9e44-7a4a-bda9-6866e309b2e6",
+    "01a16328-3c25-7289-b685-3bc360a235cc"
+   ],
+   "genes": {
+    "F": "AAAAAAaaaaaA",
+    "I": "AAAAAAaaaAAA",
+    "S": "AAAAAAaaaaaa",
+    "L": "AAAAAAAAaaaa"
+   }
+  },
+  {
+   "id": "Z39",
+   "key": "animal_Z39",
+   "guid": "g_Z39",
+   "name": "Natasha",
+   "species": "Giraffe_Reticulated",
+   "sex": 1,
+   "juv": false,
+   "contra": false,
+   "infertile": false,
+   "preg": false,
+   "age": 6.3,
+   "hab": "Hab 2",
+   "lt": "habitat",
+   "par": [
+    "g_Z40",
+    "01a16328-3c25-7289-b685-3bc360a235cc"
+   ],
+   "genes": {
+    "F": "AAAAAAaaaaAA",
+    "I": "AAAAAAaaaaAA",
+    "S": "AAAAAaaaaaaa",
+    "L": "AAAAAAAAaaaa"
+   }
+  },
+  {
+   "id": "Z40",
+   "key": "animal_Z40",
+   "guid": "g_Z40",
+   "name": "Nceba",
+   "species": "Giraffe_Reticulated",
+   "sex": 1,
+   "juv": false,
+   "contra": false,
+   "infertile": false,
+   "preg": false,
+   "age": 17.5,
+   "hab": "Hab 2",
+   "lt": "habitat",
+   "par": [
+    "01a15e44-b3d5-7567-ba3e-f6601b74965c",
+    "Brielle"
+   ],
+   "genes": {
+    "F": "AAAAAAaaaaaa",
+    "I": "AAAAAAaaaaaA",
+    "S": "AAAAaaaaaaaa",
+    "L": "AAAAAAAAaaaa"
+   }
+  },
+  {
+   "id": "Z41",
+   "key": "animal_Z41",
+   "guid": "g_Z41",
+   "name": "Mpilenhle",
+   "species": "Giraffe_Reticulated",
+   "sex": 1,
+   "juv": true,
+   "contra": false,
+   "infertile": false,
+   "preg": false,
+   "age": 0,
+   "hab": "Hab 2",
+   "lt": "habitat",
+   "par": [
+    "g_Z31",
+    "g_Z39"
+   ],
+   "genes": {
+    "F": "AAAAAAaaaaaa",
+    "I": "AAAAAAaaaaaa",
+    "S": "AAAAAAaaaaaa",
+    "L": "AAAAAAAAAaaa"
+   }
+  },
+  {
+   "id": "Z42",
+   "key": "animal_Z42",
+   "guid": "g_Z42",
+   "name": "Bokamoso",
+   "species": "Giraffe_Reticulated",
+   "sex": 0,
+   "juv": false,
+   "contra": false,
+   "infertile": false,
+   "preg": false,
+   "age": 5.7,
+   "hab": "",
+   "lt": "trade",
+   "par": [
+    "01a153ca-31d1-71fd-b6bf-8a312da60bc1",
+    "01a154f6-36cc-7a12-9bdb-7fb2feb0854f"
+   ],
+   "genes": {
+    "F": "AAAAAAaaaaaA",
+    "I": "AAAAAAaaaaaa",
+    "S": "AAAAAAaaaaaa",
+    "L": "AAAAAAAaaaaa"
+   }
+  }
+ ]
+}

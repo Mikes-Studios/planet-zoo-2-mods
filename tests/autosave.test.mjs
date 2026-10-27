@@ -36,9 +36,12 @@ test('due, saving, failed, off and unavailable', () => {
     assert.equal(autosaveSummary(Object.assign({}, base, { elapsed: 400 })).tone, 'due');
     assert.match(autosaveSummary(Object.assign({}, base, { elapsed: 400, armed: false })).detail, /waiting for the game/);
     assert.equal(autosaveSummary(Object.assign({}, base, { pending: true })).title, 'Saving…');
-    const failed = autosaveSummary(Object.assign({}, base, { lastError: 'The game refused the autosave request.', retryIn: 40 }));
+    // the next try as Lua plans it (nextTry): only a real retry is promised
+    const failed = autosaveSummary(Object.assign({}, base, { lastError: 'The game refused the autosave request.', retryIn: 40, nextTry: 'retry' }));
     assert.equal(failed.tone, 'bad');
-    assert.match(failed.detail, /Next try in 40 s/);
+    assert.match(failed.detail, /The mod tries again in 40 s/);
+    const noRetry = autosaveSummary(Object.assign({}, base, { lastError: 'The game refused the autosave request.', retryIn: 40 }));
+    assert.match(noRetry.detail, /Press Save now to try again/);
     assert.equal(autosaveSummary(Object.assign({}, base, { minutes: 0 })).short, 'Off');
     assert.equal(autosaveSummary(Object.assign({}, base, { available: false })).short, 'Game');
     assert.equal(autosaveSummary(Object.assign({}, base, { sinceSave: -1 })).last, 'No save yet this session');

@@ -23,13 +23,14 @@ const where = (model, plan, id) => {
     return m ? m.to : model.animals.get(id).hab;
 };
 
-test('breeders: adults, fertile, within fertility ages', () => {
+test('breeders: adults the game marks fertile', () => {
     assert.equal(isBreeder(an('a', M, '1')), true);
     assert.equal(isBreeder(an('a', M, '1', [], { juv: true })), false);
     assert.equal(isBreeder(an('a', M, '1', [], { contra: true })), false);
     assert.equal(isBreeder(an('a', M, '1', [], { infertile: true })), false);
-    assert.equal(isBreeder(an('a', M, '1', [], { age: 25 }), { fertilityAges: { maturity: 3, infertility: 20 } }), false);
-    assert.equal(isBreeder(an('a', M, '1', [], { age: 2 }), { fertilityAges: { maturity: 3, infertility: 999 } }), false);
+    // the game's own fertility flags decide, not the species' age table: one it marks fertile breeds
+    assert.equal(isBreeder(an('a', M, '1', [], { age: 25 }), { fertilityAges: { maturity: 3, infertility: 20 } }), true);
+    assert.equal(isBreeder(an('a', M, '1', [], { age: 2 }), { fertilityAges: { maturity: 3, infertility: 999 } }), true);
 });
 
 test('pair value: young quality and the game conception table', () => {
@@ -109,22 +110,24 @@ test('bonds: mates of a non-monogamous species cost nothing to part', () => {
     assert.equal(planProgramme(seen, 'Lion', { mating: 'polygyny', social: { max: 2 } }, DEST(['1', '2']), opt).moves.length, 0);
 });
 
-test('bonds: monogamous mates living together pair only with each other', () => {
-    // m1 is bonded to f1 (a poor match); f3 would suit m1 far better but the game won't pair them
-    const animals = [
+// the game pairs bonded mates only with each other; a bonded mate whose
+// young would score well below the best pair's is let go, so the male can
+// pair with the better female
+test('bonds: a poor bonded mate is let go; a good bonded pair stays together', () => {
+    const info = { mating: 'monogamy', social: { max: 3 } };
+    const poor = [
         an('m1', M, '1', [], { genes: G('A', 'B'), mates: ['f1'] }), an('f1', F, '1', [], { genes: G('A', 'B'), mates: ['m1'] }),
         an('f3', F, '1', [], { genes: G('E', 'F') }),
     ];
-    const info = { mating: 'monogamy', social: { max: 3 } };
-    const model = buildKinModel(snap(animals, ['1']));
-    const plan = planProgramme(model, 'Lion', info, DEST(['1']));
-    assert.equal(plan.before.breedingPairs, 1);
-    assert.equal(plan.before.youngQuality, Math.round(youngQuality(animals[0], animals[1]) * 100));
-    // without the bond the matching takes the better female
-    const free = buildKinModel(snap(animals.map(a => Object.assign({}, a, { mates: [] })), ['1']));
-    const freePlan = planProgramme(free, 'Lion', info, DEST(['1']));
-    assert.equal(freePlan.before.youngQuality, Math.round(youngQuality(animals[0], animals[2]) * 100));
-    assert.ok(plan.startScore < freePlan.startScore);
+    const plan = planProgramme(buildKinModel(snap(poor, ['1'])), 'Lion', info, DEST(['1']));
+    const f1 = plan.moves.find(m => m.id === 'f1');
+    assert.ok(f1 && f1.to === TRADE && /well below your best pair/.test(f1.reason), JSON.stringify(plan.moves));
+    assert.ok(!plan.moves.some(m => m.id === 'f3'), 'the better female stays');
+    const good = poor.map(a => (a.id === 'f1' ? Object.assign({}, a, { genes: G('E', 'F') }) : a.id === 'f3' ? Object.assign({}, a, { genes: G('G', 'H') }) : a));
+    const kept = planProgramme(buildKinModel(snap(good, ['1'])), 'Lion', info, DEST(['1']));
+    assert.equal(kept.before.breedingPairs, 1);
+    assert.equal(kept.before.youngQuality, Math.round(youngQuality(good[0], good[1]) * 100));
+    assert.ok(!kept.moves.some(m => m.id === 'f1' || m.id === 'm1'), 'the bonded pair stays together');
 });
 
 test('bonds: a breeder bonded to a mate that does not breed pairs with no one beside it', () => {
@@ -187,13 +190,14 @@ test('make-up: a contracepted second male leaves a 1:1 habitat (Eurasian lynx, 2
     assert.ok(!keep.moves.some(x => x.id === 'm2'));
 });
 
-test('make-up: infertile adults over the make-up leave, one that fills an empty place stays', () => {
+// an infertile adult never breeds: it leaves, and frees its place for a breeder
+test('make-up: infertile adults leave, the breeder stays', () => {
     // 1:1 room 2: the breeding male and an infertile male, an infertile female and no breeding female
     const animals = [an('m', M, '1'), an('mi', M, '1', [], { infertile: true }), an('fi', F, '1', [], { infertile: true })];
     const model = buildKinModel(snap(animals, ['1']));
     const plan = planProgramme(model, 'Lion', { mating: 'monogamy', social: { max: 2 } }, DEST(['1']), { options: { ratio: '1:1', useTradeCentre: false } });
     assert.equal(where(model, plan, 'mi'), TRADE);
-    assert.equal(where(model, plan, 'fi'), '1');     // no breeding female to take her place
+    assert.equal(where(model, plan, 'fi'), TRADE);
     assert.equal(where(model, plan, 'm'), '1');
 });
 
@@ -498,11 +502,13 @@ function smallZoo(seed) {
     return { model: buildKinModel(snap(animals, habs)), habs, info, ratio };
 }
 
+// the search on its own: the pair-in-every-habitat step after it (pairEvery)
+// trades some score for a breeding pair in each habitat, and is tested by itself
 test('every layout: the exhaustive answer is the true optimum (each layout scored from scratch)', () => {
     for (let seed = 1; seed <= 12; seed++) {
         const { model, habs, info, ratio } = smallZoo(seed);
         const dest = DEST(habs);
-        const plan = planProgramme(model, 'Lion', info, dest, { options: { ratio } });
+        const plan = planProgramme(model, 'Lion', info, dest, { options: { ratio, pairEvery: false } });
         assert.equal(plan.exact, true);
         const ids = Array.from(model.animals.values()).map(a => a.id);
         const places = habs.concat([TRADE]);
@@ -517,11 +523,11 @@ test('every layout: the exhaustive answer is the true optimum (each layout score
                 const a = model.animals.get(id);
                 if (to !== (a.hab || TRADE)) moves.push({ id, to });
             }
-            const s = scoreLayout(model, 'Lion', info, dest, { options: { ratio } }, moves);
+            const s = scoreLayout(model, 'Lion', info, dest, { options: { ratio, pairEvery: false } }, moves);
             if (s != null && s > best) best = s;
         }
         assert.ok(Math.abs(plan.score - best) < 1e-6, `seed ${seed}: plan ${plan.score}, best ${best}`);
-        assert.ok(Math.abs(scoreLayout(model, 'Lion', info, dest, { options: { ratio } }, plan.moves) - plan.score) < 1e-6);
+        assert.ok(Math.abs(scoreLayout(model, 'Lion', info, dest, { options: { ratio, pairEvery: false } }, plan.moves) - plan.score) < 1e-6);
     }
 });
 
@@ -529,13 +535,13 @@ test('the search alone finds the optimum on small zoos', () => {
     const missed = [];
     for (let seed = 100; seed < 260; seed++) {
         const { model, habs, info, ratio } = smallZoo(seed);
-        const exact = planProgramme(model, 'Lion', info, DEST(habs), { options: { ratio } });
-        const heur = planProgramme(model, 'Lion', info, DEST(habs), { options: { ratio, exactLimit: 0 } });
+        const exact = planProgramme(model, 'Lion', info, DEST(habs), { options: { ratio, pairEvery: false } });
+        const heur = planProgramme(model, 'Lion', info, DEST(habs), { options: { ratio, exactLimit: 0, pairEvery: false } });
         assert.equal(heur.exact, false);
         if (heur.score < exact.score - 1e-6) {
             missed.push(`${seed}: ${heur.score.toFixed(4)} < ${exact.score.toFixed(4)}`);
             // the deep engine (more starts) finds it
-            const deep = planProgramme(model, 'Lion', info, DEST(habs), { options: { ratio, exactLimit: 0, engine: 'deep', starts: 8 } });
+            const deep = planProgramme(model, 'Lion', info, DEST(habs), { options: { ratio, exactLimit: 0, engine: 'deep', starts: 8, pairEvery: false } });
             assert.ok(deep.score > exact.score - 1e-6, `seed ${seed}: deep ${deep.score} < ${exact.score}`);
         }
     }
@@ -626,6 +632,9 @@ test('pregnant: never moved, not even when her habitat is over its room', () => 
     assert.ok(!plan.moves.some(m => m.id === 'f1' || m.id === 'f2'), JSON.stringify(plan.moves));
 });
 
+// a pregnant female gives birth where she is; the one move she gets is out
+// of the trade centre into a habitat (she can only give birth there)
+const pregnantMoves = (model, plan, preg) => plan.moves.filter(m => preg.has(m.id) && !(model.animals.get(m.id).lt === 'trade' && m.to !== TRADE));
 test('pregnant: no search step moves one (exhaustive, search, slices; random small zoos)', async () => {
     for (let seed = 300; seed < 360; seed++) {
         const { model, habs, info, ratio } = smallZoo(seed);
@@ -635,12 +644,11 @@ test('pregnant: no search step moves one (exhaustive, search, slices; random sma
         const preg = new Set(raw.filter(a => a.preg).map(a => a.id));
         for (const exactLimit of [20000, 0]) {
             const plan = planProgramme(m2, 'Lion', info, DEST(habs), { options: { ratio, exactLimit } });
-            const bad = plan.moves.filter(m => preg.has(m.id));
-            assert.deepEqual(bad, [], `seed ${seed} exactLimit ${exactLimit}`);
+            assert.deepEqual(pregnantMoves(m2, plan, preg), [], `seed ${seed} exactLimit ${exactLimit}`);
         }
         if (seed % 10 === 0) {
             const plan = await planProgrammeAsync(m2, 'Lion', info, DEST(habs), { options: { ratio, exactLimit: 0 } });
-            assert.deepEqual(plan.moves.filter(m => preg.has(m.id)), [], `seed ${seed} async`);
+            assert.deepEqual(pregnantMoves(m2, plan, preg), [], `seed ${seed} async`);
         }
     }
 });

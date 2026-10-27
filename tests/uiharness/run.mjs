@@ -158,21 +158,26 @@ async function shot(page, name) {
     return file;
 }
 
+// The Market lister is on by default in game; its panel sits over the
+// storage list, so harness pages start with it off (the player's prefs,
+// prefs.js, read from their mirror while no Lua answers) and the lister
+// scenario turns it on itself.
+function listerOff() {
+    try {
+        const prefs = JSON.parse(window.localStorage.getItem('PZ2QoL.prefs.v1') || '{}');
+        prefs.listerEnabled = false;
+        window.localStorage.setItem('PZ2QoL.prefs.v1', JSON.stringify(prefs));
+    }
+    catch (e) {
+        // no storage: on, as in game
+    }
+}
+
 async function openFrontend(browser, url, label) {
     const page = await browser.newPage({ viewport: { width: 1920, height: 1080 } });
     const rec = attachCollectors(page, label);
     await page.addInitScript(pageShims, { seed: SEED, css: GAMEFACE_COMPAT_CSS });
-    // the Market lister is on by default in game; its panel sits over the
-    // storage list, so harness pages start with it off and the lister
-    // scenario turns it on itself
-    await page.addInitScript(() => {
-        try {
-            window.localStorage.setItem('PZ2QoL.listerEnabled', 'false');
-        }
-        catch (e) {
-            // no storage: on, as in game
-        }
-    });
+    await page.addInitScript(listerOff);
     await page.goto(url, { waitUntil: 'load' });
     await page.waitForSelector('.FrontendModule_root', { timeout: 30000 });
     await page.waitForTimeout(1500);
@@ -1142,14 +1147,7 @@ async function openHud(browser, url, label) {
     const page = await browser.newPage({ viewport: { width: 1920, height: 1080 } });
     const rec = attachCollectors(page, label);
     await page.addInitScript(pageShims, { seed: SEED, css: GAMEFACE_COMPAT_CSS });
-    await page.addInitScript(() => {
-        try {
-            window.localStorage.setItem('PZ2QoL.listerEnabled', 'false');
-        }
-        catch (e) {
-            // no storage
-        }
-    });
+    await page.addInitScript(listerOff);
     await page.goto(url, { waitUntil: 'load' });
     await page.waitForTimeout(4000);
     return { page, rec };
@@ -1339,6 +1337,20 @@ try {
         results.screenshots.errorBannerExpanded = await shot(page, '7_modded_error_banner_expanded');
         results.facts.errorBanner = (await domFacts(page)).errorBanner;
         await page.locator('.PZ2QoL_errorBanner .PZ2QoL_errorButton', { hasText: 'Dismiss' }).click();
+        // the Kin setting errorBanner off: the error is logged, the banner stays hidden
+        results.facts.errorBannerOff = await page.evaluate(async () => {
+            const kin = await import('/js/mods/pz2qol/kin.js');
+            const errors = await import('/js/mods/pz2qol/errors.js');
+            kin.setKinSettings({ errorBanner: false });
+            engine.trigger('PZ2QoL_Error', 'server', 'Server error: banner off', 'test detail');
+            await new Promise(r => setTimeout(r, 600));
+            const last = errors.getErrorLog().pop();
+            const out = { hidden: document.querySelector('.PZ2QoL_errorBanner').classList.contains('hidden'), logged: !!last && last.title === 'Server error: banner off', shown: !!last && last.shown };
+            kin.setKinSettings({ errorBanner: true });
+            return out;
+        });
+        const off = results.facts.errorBannerOff;
+        if (!off.hidden || !off.logged || off.shown) throw new Error(`error banner off: ${JSON.stringify(off)}`);
     });
     await step('market lister', async () => {
         results.facts.lister = await runListerScenario(page);

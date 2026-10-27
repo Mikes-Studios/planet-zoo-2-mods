@@ -24,7 +24,7 @@ test('a predicate applies only while its flag is on', () => {
     assert.deepEqual(ids(applyStorageFilters(herd, f({}), predicates)), ['a', 'b', 'c']);
     assert.deepEqual(ids(applyStorageFilters(herd, f({ related: true }), predicates)), ['a', 'c']);
     // combines with the built-in filters and sorts
-    assert.deepEqual(ids(applyStorageFilters(herd, f({ related: true, adults: true }), predicates)), ['a']);
+    assert.deepEqual(ids(applyStorageFilters(herd, f({ related: true, adults: 'all' }), predicates)), ['a']);
     assert.deepEqual(ids(applyStorageFilters(herd, f({ related: true, sort: 'gene' }), predicates)), ['a', 'c']);
 });
 
@@ -34,8 +34,8 @@ test('a flag without a predicate filters nothing (Kin off or no data yet)', () =
 });
 
 // Fertile adults: the game's maturity carries the infertile stages
-// (EAnimalMaturity 4/5/6); the market won't take infertile elderly animals.
-import { isFertileAdult, isInfertileElderly, Maturity } from '../mods/PZ2QoL/UI/UIGameface/js/mods/pz2qol/scores.js';
+// (EAnimalMaturity 4/5/6); the market won't take an elderly animal, fertile or not.
+import { isElderly, isFertileAdult, Maturity } from '../mods/PZ2QoL/UI/UIGameface/js/mods/pz2qol/scores.js';
 
 const ages = [
     { id: 'infant', maturity: Maturity.Infant },
@@ -52,26 +52,27 @@ test('maturity values match the game enum', () => {
     assert.deepEqual([Maturity.Infant, Maturity.YoungAdult, Maturity.Adult, Maturity.Elderly, Maturity.YoungAdultInfertile, Maturity.AdultInfertile, Maturity.ElderlyInfertile], [0, 1, 2, 3, 4, 5, 6]);
 });
 
-test('fertileAdults is off by default and counts as an active filter', () => {
-    assert.equal(DEFAULT_STORAGE_FILTERS.fertileAdults, false);
-    assert.equal(storageFiltersActive(f({ fertileAdults: true })), true);
+test('the Adults chip is off by default; each stage counts as an active filter', () => {
+    assert.equal(DEFAULT_STORAGE_FILTERS.adults, 'off');
+    for (const stage of ['all', 'fertile', 'juvenile']) assert.equal(storageFiltersActive(f({ adults: stage })), true, stage);
 });
 
-test('fertileAdults keeps fertile adults, including fertile elderly', () => {
-    assert.deepEqual(ids(applyStorageFilters(ages, f({ fertileAdults: true }))), ['young', 'adult', 'elderly']);
-    // plain Adults still includes every non-infant stage
-    assert.deepEqual(ids(applyStorageFilters(ages, f({ adults: true }))), ['young', 'adult', 'elderly', 'youngInf', 'adultInf', 'elderlyInf']);
-    assert.deepEqual(ids(applyStorageFilters(ages, f({ juveniles: true }))), ['infant', 'unknown']);
+test('the Adults chip: all adults, fertile adults (fertile elderly too), juveniles', () => {
+    assert.deepEqual(ids(applyStorageFilters(ages, f({ adults: 'fertile' }))), ['young', 'adult', 'elderly']);
+    assert.deepEqual(ids(applyStorageFilters(ages, f({ adults: 'all' }))), ['young', 'adult', 'elderly', 'youngInf', 'adultInf', 'elderlyInf']);
+    assert.deepEqual(ids(applyStorageFilters(ages, f({ adults: 'juvenile' }))), ['infant', 'unknown']);
     assert.deepEqual(ids(ages.filter(isFertileAdult)), ['young', 'adult', 'elderly']);
 });
 
-test('only elderly infertile animals are flagged for the lister skip', () => {
-    assert.deepEqual(ids(ages.filter(isInfertileElderly)), ['elderlyInf']);
+test('every elderly animal, fertile or not, is flagged for the lister skip', () => {
+    assert.deepEqual(ids(ages.filter(isElderly)), ['elderly', 'elderlyInf']);
 });
 
-// Sellable: what the game's own sell flow refuses (juvenile, infertile,
-// pregnant), plus storage rows already listed or being moved.
-import { isSellable, sellBlockers } from '../mods/PZ2QoL/UI/UIGameface/js/mods/pz2qol/scores.js';
+// Sellable: what the game's own sell flow refuses (juvenile, pregnant,
+// elderly), plus storage rows already listed or being moved. An infertile
+// adult is not blocked: the game may refuse it (cautionOf), so the lister
+// tries it and the If refused option decides.
+import { cautionOf, isSellable, sellBlockers } from '../mods/PZ2QoL/UI/UIGameface/js/mods/pz2qol/scores.js';
 
 const stock = [
     { id: 'ok', maturity: Maturity.Adult },
@@ -90,35 +91,47 @@ const stock = [
 test('sellBlockers names each reason', () => {
     const by = Object.fromEntries(stock.map(a => [a.id, sellBlockers(a)]));
     assert.deepEqual(by.ok, []);
-    assert.deepEqual(by.okElderly, []);
+    assert.deepEqual(by.okElderly, ['elderly']);
     assert.deepEqual(by.infant, ['juvenile']);
-    assert.deepEqual(by.youngInf, ['infertile']);
-    assert.deepEqual(by.adultInf, ['infertile']);
-    assert.deepEqual(by.elderlyInf, ['infertile']);
+    assert.deepEqual(by.youngInf, []);
+    assert.deepEqual(by.adultInf, []);
+    assert.deepEqual(by.elderlyInf, ['elderly']);
+    assert.deepEqual(stock.filter(a => cautionOf(a) === 'infertile').map(a => a.id), ['youngInf', 'adultInf']);
     assert.deepEqual(by.pregnant, ['pregnant']);
     assert.deepEqual(by.listed, ['listed']);
     assert.deepEqual(by.expired, []);
     assert.deepEqual(by.moving, ['moving']);
     assert.deepEqual(by.unknown, []);
-    assert.deepEqual(sellBlockers({ maturity: Maturity.Infant, isPregnant: true, auctionTimerSeconds: 5 }), ['juvenile', 'pregnant', 'listed']);
+    assert.deepEqual(sellBlockers({ maturity: Maturity.Infant, isPregnant: true, auctionTimerSeconds: 5 }), ['listed', 'pregnant', 'juvenile']);
 });
 
-test('sellable filter: off by default, yes and no split the list', () => {
+// Without the game's own verdict (the Market desk's Check storage), a medal
+// means the market, none means release, and a Frontier zoo's animal only
+// Quick trade takes.
+const FRONTIER = '[AnimalExchange_Source_Description:Value=|Frontier Zoo|]';
+const leaving = stock.concat([
+    { id: 'medal', gender: 1, genes: {}, maturity: Maturity.Adult, medal: 'gold' },
+    { id: 'frontier', gender: 1, genes: {}, maturity: Maturity.Adult, source: FRONTIER },
+]);
+
+test('sellable filter: off by default; each way out and no split the list', () => {
     assert.equal(DEFAULT_STORAGE_FILTERS.sellable, 'any');
-    assert.equal(storageFiltersActive(f({ sellable: 'yes' })), true);
-    assert.equal(storageFiltersActive(f({ sellable: 'no' })), true);
+    for (const way of ['market', 'release', 'quick', 'no']) assert.equal(storageFiltersActive(f({ sellable: way })), true, way);
     assert.equal(storageFiltersActive(f({ sellable: 'any' })), false);
-    const yes = ids(applyStorageFilters(stock, f({ sellable: 'yes' })));
-    const no = ids(applyStorageFilters(stock, f({ sellable: 'no' })));
-    assert.deepEqual(yes, ['ok', 'okElderly', 'expired', 'unknown']);
-    assert.deepEqual(no, ['infant', 'youngInf', 'adultInf', 'elderlyInf', 'pregnant', 'listed', 'moving']);
-    assert.equal(yes.length + no.length, stock.length);
-    assert.deepEqual(ids(stock.filter(isSellable)), yes);
+    const by = way => ids(applyStorageFilters(leaving, f({ sellable: way })));
+    assert.deepEqual(by('market'), ['medal']);
+    assert.deepEqual(by('release'), ['ok', 'youngInf', 'adultInf', 'expired', 'unknown']);
+    assert.deepEqual(by('quick'), ['frontier']);
+    assert.deepEqual(by('no'), ['okElderly', 'infant', 'elderlyInf', 'pregnant', 'listed', 'moving']);
+    assert.equal(by('market').length + by('release').length + by('quick').length + by('no').length, leaving.length);
+    // the game's verdict decides where there is one
+    const verdict = a => (a.id === 'ok' ? { trade: true } : null);
+    assert.deepEqual(ids(applyStorageFilters(leaving, f({ sellable: 'market' }), {}, verdict)), ['ok', 'medal']);
     // combines with other filters
-    assert.deepEqual(ids(applyStorageFilters(stock, f({ sellable: 'no', juveniles: true }))), ['infant']);
-    // a pregnant animal is never under Sellable, even a fertile adult one
-    assert.deepEqual(ids(applyStorageFilters(stock, f({ sellable: 'yes', pregnant: true }))), []);
-    assert.deepEqual(ids(applyStorageFilters(stock, f({ sellable: 'no', pregnant: true }))), ['pregnant']);
+    assert.deepEqual(ids(applyStorageFilters(leaving, f({ sellable: 'no', adults: 'juvenile' }))), ['infant']);
+    // a pregnant animal goes no way, even a fertile adult one
+    assert.deepEqual(ids(applyStorageFilters(leaving, f({ sellable: 'release', pregnant: true }))), []);
+    assert.deepEqual(ids(applyStorageFilters(leaving, f({ sellable: 'no', pregnant: true }))), ['pregnant']);
     assert.equal(isSellable({ maturity: Maturity.YoungAdult, isPregnant: true }), false);
 });
 
@@ -136,7 +149,7 @@ test('species: one species only (the trade shortcuts), off by default', () => {
     assert.deepEqual(ids(applyStorageFilters(zoo, f({ species: 'lion' }))), ['l1', 'l2'], 'case-insensitive');
     assert.deepEqual(ids(applyStorageFilters(zoo, f({ species: '[Animal_Lion]' }))), ['l1', 'l2']);
     assert.deepEqual(ids(applyStorageFilters(zoo, f({ species: 'Leopard_African' }))), ['a1']);
-    assert.deepEqual(ids(applyStorageFilters(zoo, f({ species: 'Lion', adults: true }))), ['l1'], 'with Adults');
+    assert.deepEqual(ids(applyStorageFilters(zoo, f({ species: 'Lion', adults: 'all' }))), ['l1'], 'with Adults');
     assert.deepEqual(ids(applyStorageFilters(zoo, f({ species: 'Lion', sort: 'gene' }))), ['l2', 'l1'], 'with a sort');
     assert.deepEqual(ids(applyStorageFilters(zoo, f({ species: 'Zebra' }))), []);
 });

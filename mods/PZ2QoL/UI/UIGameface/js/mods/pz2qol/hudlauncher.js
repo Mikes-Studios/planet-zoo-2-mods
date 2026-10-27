@@ -4,6 +4,8 @@
 //  - Breeding programme (under it): the small Breeding window, where the
 //    game opens its info panels (breedwin.js).
 //  - Autosave: shows the mod's autosave state; click for its settings.
+//  - Settings: the mod's settings, every switch in one place (the Kin
+//    planner's Settings, opened).
 //  - Script profiler (bottom): which scripts take time each frame
 //    (profiler.js); the first button given up when room is short.
 //
@@ -11,18 +13,21 @@
 // box (.ToolsBar_root), never inside the game's preact tree (the game
 // recreates that column). Hidden whenever the column is hidden (management
 // screen, photo/camera mode, hidden UI, cinematics), and it gives up the
-// autosave button, then the Breeding button, then itself, when the alert
-// buttons above leave no room.
+// autosave button, then the Breeding button, then the Settings button, then
+// itself, when the alert buttons above leave no room.
 import { autosaveCard, getAutosaveSummary, installAutosave, onAutosave } from '/js/mods/pz2qol/autosave.js';
 import { isLogEnabled } from '/js/mods/pz2qol/debuglog.js';
 import { breadcrumb, reportError } from '/js/mods/pz2qol/errors.js';
-import { h, icon, setClass, setText } from '/js/mods/pz2qol/ui.js';
+import { GAME_TOOLTIPS, GAME_WINDOWS, stepAside } from '/js/mods/pz2qol/stepaside.js';
+import { h, icon, setClass, setText, visibleBox } from '/js/mods/pz2qol/ui.js';
+import { isHudPage } from '/js/mods/pz2qol/kinhooks.js';
 
 const TICK_MS = 250;
 
 let dock = null;
 let boardBtn = null;
 let breedBtn = null;
+let settingsBtn = null;
 let saveBtn = null;
 let saveBadge = null;
 let card = null;
@@ -30,6 +35,7 @@ let boardModule = null;
 let breedModule = null;
 let profBtn = null;
 let profModule = null;
+let fitRoom = null; // the room above the tools column and the log state the dock was last fitted to
 
 function board() {
     if (boardModule) return Promise.resolve(boardModule);
@@ -58,6 +64,14 @@ function toggleBreeding() {
         m.toggleBreedingWindow({});
         setTimeout(sync, 50);
     }).catch(e => reportError('ui', 'Breeding window could not open', e));
+}
+
+function openSettings() {
+    breadcrumb('settings_launch');
+    closeCard();
+    import('/js/mods/pz2qol/kinplanner.js')
+        .then(m => m.openKinPlanner({ settings: true }))
+        .catch(e => reportError('ui', 'Settings could not open', e, { silent: true }));
 }
 
 function profiler() {
@@ -110,10 +124,11 @@ function build() {
     boardBtn = roundButton('IconAnimals', 'Species board', toggleBoard);
     saveBtn = roundButton('save', 'Autosave', toggleCard);
     breedBtn = roundButton('Icon_Heart', 'Breeding programme', toggleBreeding);
+    settingsBtn = roundButton('IconSettings', 'Settings', openSettings);
     profBtn = roundButton('IconTime', 'Script profiler', toggleProfilerPanel);
     saveBadge = h('div.PZ2QoL_dockBadge');
     saveBtn.appendChild(saveBadge);
-    dock = h('div.PZ2QoL_dock', null, h('div.PZ2QoL_dockPanel'), saveBtn, boardBtn, breedBtn, profBtn);
+    dock = h('div.PZ2QoL_dock', null, h('div.PZ2QoL_dockPanel'), settingsBtn, saveBtn, boardBtn, breedBtn, profBtn);
     document.body.appendChild(dock);
     document.addEventListener('click', e => {
         if (card && !card.contains(e.target) && !saveBtn.contains(e.target)) closeCard();
@@ -124,15 +139,6 @@ function build() {
             closeCard();
         }
     }, true);
-}
-
-function visibleBox(node) {
-    if (!node) return null;
-    for (let n = node; n && n != document.body; n = n.parentNode) {
-        if (n.classList && (n.classList.contains('hidden') || n.classList.contains('displayNone'))) return null;
-    }
-    const r = node.getBoundingClientRect();
-    return r.width > 0 && r.height > 0 ? r : null;
 }
 
 function sync() {
@@ -170,6 +176,23 @@ function sync() {
     if (card && card.__sync) card.__sync();
 }
 
+// Gives up the script profiler, then the autosave button, then the Breeding
+// button, then the Settings button, then the whole dock until it fits;
+// measured again only when the room or the build's log changes. The script
+// profiler is a developer tool: debug builds only.
+function fitDock(room) {
+    const debug = isLogEnabled() === true;
+    const key = `${room}|${debug}`;
+    if (key === fitRoom) return;
+    fitRoom = key;
+    const giveUp = [profBtn, saveBtn, breedBtn, settingsBtn, dock];
+    for (const node of giveUp) setClass(node, 'displayNone', node === profBtn && !debug);
+    for (const node of giveUp) {
+        if (dock.getBoundingClientRect().height <= room) return;
+        setClass(node, 'displayNone', true);
+    }
+}
+
 function place() {
     const tools = visibleBox(document.querySelector('.ToolsBar_root'));
     if (!tools) {
@@ -184,18 +207,8 @@ function place() {
     dock.style.bottom = `${Math.round(window.innerHeight - tools.top)}px`;
     // the alert buttons above grow downwards: keep clear of them
     const alerts = visibleBox(document.querySelector('.NotificationsModule_buttons'));
-    const room = alerts ? tools.top - alerts.bottom - 4 : Infinity;
-    setClass(saveBtn, 'displayNone', false);
-    setClass(breedBtn, 'displayNone', false);
-    // the script profiler is a developer tool: debug builds only
-    setClass(profBtn, 'displayNone', isLogEnabled() !== true);
-    setClass(dock, 'displayNone', false);
-    if (dock.getBoundingClientRect().height > room) setClass(profBtn, 'displayNone', true);
-    if (dock.getBoundingClientRect().height > room) {
-        setClass(saveBtn, 'displayNone', true);
-        if (dock.getBoundingClientRect().height > room) setClass(breedBtn, 'displayNone', true);
-        if (dock.getBoundingClientRect().height > room) setClass(dock, 'displayNone', true);
-    }
+    fitDock(alerts ? tools.top - alerts.bottom - 4 : Infinity);
+    stepAside(dock, `${GAME_TOOLTIPS}, ${GAME_WINDOWS}`, 'dock');
     if (card) {
         const r = saveBtn.getBoundingClientRect();
         if (r.height <= 0) return closeCard();
@@ -207,8 +220,7 @@ function place() {
 let installed = false;
 export function installHudLauncher() {
     if (installed) return true;
-    // the park HUD page only
-    if (!/PZ2QoLHUD/i.test(String(window.location && window.location.pathname))) return true;
+    if (!isHudPage()) return true;
     installed = true;
     installAutosave();
     build();

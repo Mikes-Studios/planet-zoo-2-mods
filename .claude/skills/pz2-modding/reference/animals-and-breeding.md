@@ -117,7 +117,7 @@ Used by the proposal `docs/PROPOSAL-inbreeding-qol.md`.
   `editors.park.animaldatabasetab.lua`).
 - Contraception: the Animals list and info panel both just call
   `animals:SetUsingContraceptive(entity, b)` (exhibits: `SetExhibitAnimalUsingContraceptiveUsingUID`).
-- **Exhibit animal UIDs can be GUIDs, not numbers** (a 3.2.0 player's Franchise log: `bad animal id x01a1583f-37da-76dd-b9aa-ea664ebd5888`). The Kin page id is `"x" .. idString(uid)`, so `tonumber` can't turn it back. `Kin.tExhibitUids` keeps each scanned UID exactly as `GetAllAnimalIDs` gave it, and `entityOf` passes that value back to the game (`pz2qol.kin.lua`). **proven** (that the GUID form exists); the round trip is **offline**.
+- **Exhibit animal UIDs can be GUIDs, not numbers** (a 3.2.0 player's Franchise log: `bad animal id x01a1583f-37da-76dd-b9aa-ea664ebd5888`). The Kin page id is `"x" .. idString(uid)`, so `tonumber` can't turn it back. The scan keeps each exhibit animal's UID on its record (`Kin.tStatic[key].uid`; an ancestor's in `Kin.tExhibitUid`) exactly as `GetAllAnimalIDs` gave it, and `Kin._EntityOf` passes that value back to the game (`pz2qol.kin.lua`). **proven** (that the GUID form exists); the round trip is **offline**.
 - Locate: `CameraModeManager:RequestMode("Orbit", {targetEntityID = nLocateEntity, bLocate = true})`
   then `InfoPopUpComponent:CreateAndOpenInfoPopUpForEntity` (the Animals list's own locate).
 - **Locating a habitat or an exhibit** (**offline**, 1.0.5): `GuestUIUtils.FocusCameraOnEntity(transform,
@@ -161,6 +161,13 @@ Used by the proposal `docs/PROPOSAL-inbreeding-qol.md`.
 - `geneticsTooltip` on zoo rows is defined in the schema but no game component renders it.
 - Contraception from the UI: `ManagementAnimals_ContraceptionToggled(id, bool)` and
   `InfoPanel_Animal_Contraceptive(bool)`.
+- **"releasable" in the Animals tab's species search** (2026-10-25, `pz2qol.releasable.lua`,
+  **offline**): typing `releasable` or `release` lists only the animals that can go to the wild,
+  so a habitat's or the zoo's can be ticked at once and sent to the trade centre for release
+  groups. Eligible: the game's own check (`animals:CanReleaseAnimal`, exhibits
+  `CanReleaseAnimalUID`), or a juvenile held back by its age alone (finalising a release group
+  matures it; `GetRelocatePreventers` against `RelocateAnimalsPopup.g_tReleasePreventers`). It
+  patches `Editors.Park.AnimalDatabaseTab`'s search and reads only; marks `releasable_*`.
 
 ## Popups and storage (found while building Kin)
 
@@ -354,6 +361,11 @@ All **offline** (decompiled `editors.animal.animalmovementeditmode.lua`,
   and game time"). At 5x a stuck animal is out ~4-5 real s after boxing; paused, nothing runs.
   Real-time floors keep 0.5 s between scans and between releases. The trace's `release` `clock`
   LOG line names the clock source (`calendar` expected; game-time version **offline** only).
+  **Overdue mothers** (2026-10-25, Kin setting `overdueBox`, off by default, **offline**): a mother
+  still pregnant at twice her species' pregnancy gives birth once she is boxed and let out in
+  place. `kinbirth.js` asks for it once per pregnancy (`PZ2QoL_Rebox`); `BoxRelease.Rebox` boxes
+  her the way the player would (`IsAnimalBoxableByPlayer`, `ClaimBoxing`, `BoxAnimal`) and the
+  release scan lets her out whatever `releaseBoxed` says. Tests: `tests/lua/test_boxrelease.lua`.
   **Stopped after a park reload** (**proven**, Y: 2026-10-20, 3.2.0 debug trace): in the first park
   of a launch it released ~20 animals; after the player left the park and loaded one again
   (`x_park_end` → `x_hud_init`) it released nothing for 40 min although turtles sat boxed,
@@ -626,6 +638,14 @@ All **offline** (decompiled `editors.animal.animalmovementeditmode.lua`,
 
 ## Group make-up: males per female (2026-10-17)
 
+- **The park's own rules** (2026-10-25, `Kin._AnimalRules`): the scan sends `rules` from the park
+  settings (`Helpers.ParkSettingsData` `EnableSocialGroups` / `EnableOvercrowding` through
+  `IScenarioManager:GetScenarioSetting`), both true unless the park switched them off. With social
+  groups on (every Franchise zoo) the game's group rules bind as below. Off (a sandbox park), no
+  group rule binds: `sandboxRule` makes it one breeding male per habitat with any number of
+  females, so every juvenile's father is known; leader species and monogamous pairs keep their own
+  make-up. With overcrowding off (`overcrowdingOn`), a habitat holds any number of adults (the
+  programme, Thin out and the growing-up alerts).
 - **The game's own composition data** (**offline**, decompiled 1.0.5 Lua): the world API
   `wildterritory` (in zoo parks too: `AnimalMovementEditMode` holds it) has
   `GetTerritorySocialGroupsForSpecies(sSpecies)` → array of `{ nSocialGroupType, sNameSymbol, nMale,
@@ -692,15 +712,21 @@ All **offline** (decompiled `editors.animal.animalmovementeditmode.lua`,
 ## Breeding programme optimiser (2026-10-17, `kinprogramme.js`)
 
 - **Player tuning** (2026-10-19, `kinprogtune.js`, harness + node only): every rule in
-  `PROGRAMME_DEFAULTS` the player may change (move / outsider / bond-break cost, related, room and
-  make-up penalties, line bonus, `spareOut`, `defaultCapacity`, Classic search budget,
+  `PROGRAMME_DEFAULTS` the player may change (move / outsider / bond-break cost, room and make-up
+  penalties, line bonus, `spareOut`, `defaultCapacity`, Classic search budget,
   `exactLimit`), a few named choices each, set in the Breeding window's **More options** and kept
   player-wide in prefs `progTune` (`{ key: choiceId }`, defaults left out). `applyTuning` is applied
   last in the board's `programmeOptions`, the window's, and `kinautocore.programmeOptionsFor`
   (4th arg); a non-empty `tuningKey` is appended to the board's `programmeKey`, so deep results
   are kept per tuning. Empty pref = the plans as before.
 
-- Objective per habitat: the best pairs under the make-up (exact b-matching, `maxWeightPairs`:
+- **The objective** (2026-10-25): the header of `kinprogramme.js` states it. A pair's value is its
+  expected young by the game's own gene formula, times the game's conception chance, times the
+  years both can still breed; relatives of the other sex together and going over the game's most
+  adults per sex break a hard rule (no tuning allows them). After the search, `pairEveryHabitat`
+  gives every habitat set aside for the species a breeding pair while the breeders allow one
+  (option `pairEvery`, on; the optimality tests turn it off to test the search alone).
+- Objective per habitat (the earlier form, kept for the method): the best pairs under the make-up (exact b-matching, `maxWeightPairs`:
   Hungarian method on copies of the animals with several partners; "any" partners = each animal of
   the other sex takes its best), minus related pairs (2 each), adults over the room (1 each),
   breeders over the make-up (1 each: 1:k allows `max(1, ceil(females / k))` males), plus 0.01 per
@@ -715,7 +741,8 @@ All **offline** (decompiled `editors.animal.animalmovementeditmode.lua`,
   won't allow. `bondBreakCost` (0.15, flat) is charged only for monogamous bonds; mates listed for
   other species cost nothing to part. Scaling it by mourning length waits for a way to read
   `MourningSeasons` in game (no Lua call known). Tests: `kinprogramme.test.mjs` "bonds: …".
-  The objective changed, so the `kinprogrammedeep.test.mjs` benchmark optima were proven again with
+  Those benchmark optima belong to the earlier objective: `kinprogrammedeep.test.mjs` holds Deep
+  to at least Classic on those zoos until they are proven again with HiGHS. They were proven with
   HiGHS (the MILP gets `y + x_i + x_j ≤ 2` for every pair of a bonded animal with someone else, and
   no pairs for a breeder at its non-breeding mate's place; it matched the exhaustive plan on 144
   small zoos): 20 monogamy seed 1 = 3.002778, 40 1:3 seed 4 = 9.963160 (seed 1, 7.003958, has only
@@ -843,7 +870,10 @@ All **offline** (decompiled `editors.animal.animalmovementeditmode.lua`,
   2026-10-16, never released). Turned on per species on the Species board; with no species on it,
   nothing of it runs (no listeners, no timers, nothing written). It runs by itself in every
   park, Franchise too (developer, 2026-10-19: the one exception to click-started Franchise
-  automation); species due together take turns in a queue, one run at a time.
+  automation); species due together take turns in a queue, one run at a time. With the Kin
+  setting `autoOnAssign` (Habitat set aside turns Auto on, off by default) a species with a habitat
+  set aside and no Auto mode settings yet gets Auto mode on (`kinauto.js autoForAssigned`, on every
+  park scan); one the player turned off stays off.
 - A run is Thin out (`kincull.js cullPlan`) **then** the Breeding programme (`planProgrammeAsync`)
   on the zoo Thin out leaves, then the moves through `kinmoves.js runPlan`. **Order matters
   (offline, Node):** the programme counts adults that don't breed (old, infertile, contraception)
@@ -852,22 +882,24 @@ All **offline** (decompiled `editors.animal.animalmovementeditmode.lua`,
 - **The programme never pairs close kin** (`relatedPair`: the game's rule, or kinship of at least
   the close-kin threshold), and sends breeders with no place in a group to the trade centre ("no
   place in a breeding group"). Run over and over in a closed population (no new animals), that
-  empties a species. A 50-park-year soak died out in 35 years. Auto mode never sends the last
-  breeding male or female of a species away, and says when breeders have no unrelated partner;
-  new blood has to come from the market (the player).
+  empties a species. A 50-park-year soak died out in 35 years. Auto mode keeps the last breeding
+  male or female of a species unless it would live beside a relative of the other sex (never
+  inbreed comes first), and says when breeders have no unrelated partner; new blood has to come
+  from the market (the player).
 - **The programme's best layout shifts as the zoo changes** (births, ageing). Re-run every
   quarter park year with Best genetics (move cost 0), it moved animals back where they came from
   (80 times in 50 years in one soak). An animal Auto mode moved stays put for a park year
-  (`AUTO_LIMITS.cooldownYears`); after that the soak has no back-and-forth.
-- Young that grow up before the next run breed with a parent before anything moves them, because
-  the programme only sees breeders (soak: 4 to 9 % inbred births). Auto mode shows the programme
-  young within half a park year of maturity as adults (`kinautocore.js projectGrownUp`), which
-  brought inbred births to about 0.
+  (`AUTO_LIMITS.cooldownYears`), unless it lives beside a relative of the other sex. A breeder
+  parked at the trade centre is weighed again once its herd changes (a birth, an arrival, a young
+  one grown up: `freeParked`). The soak allows a few moves back for both (at most 5 reversals and
+  3 animals moved three times in a year per 50 years), never enough to stop a species.
+- A juvenile only grows up in a habitat, so no plan moves one before it is grown. Auto mode runs a
+  species as soon as one of its young grows up (`noteHerdChanges`), and the programme parts it
+  from a parent of the other sex then.
 - **Youth is left alone** (developer, 2026-10-19): no plan sends a juvenile to the trade centre
   (`programmeSteps` drops such a move; `finishAutoRun` holds one the projection planned, "young:
-  stays until grown up"). The projection still places nearly grown young in another habitat. Cost
-  in the soak: inbred births 2.4-4.8 % (was ≤2 %), because a young one with no place elsewhere grows
-  up beside its parents (`kinauto_soak.test.mjs` now allows 6 %). Young waiting at the trade centre
+  stays until grown up"). Cost in the soak: inbred births 2.4-4.8 %, because a young one with no
+  place elsewhere grows up beside its parents (`kinauto_soak.test.mjs` allows 6 %). Young waiting at the trade centre
   go back to a habitat (option `youngBack`, `youngBackMoves`): the mother's habitat after the plan,
   else the father's, else its own assigned one, else the allowed habitat with the most room.
 - **Juveniles don't take adults' room** (developer, 2026-10-19). `GetSpaceRequirementsInHabitatForSpecies`
@@ -891,8 +923,38 @@ All **offline** (decompiled `editors.animal.animalmovementeditmode.lua`,
   (`kinauto.js` `storeReady` / `checkZoo`); otherwise one zoo's data lands in another.
 - Franchise vs offline for an action without a click: the scan's `mode` alone fails open
   (`Kin._GameMode` says offline whenever the hub type is not the Franchise constant, also when the
-  constant is missing). Auto mode also needs `PZ2QoL_AutoGate`'s `hubTypeKnown` and
-  `franchiseZoo === false` (`franchise:GetCurrentZooGUID()` is nil outside Franchise).
+  constant is missing). Auto mode runs the same in both; the mode only shows in its state.
+
+## Breeding rules and their settings (2026-10-25)
+
+What the programme, Auto mode and the Species board keep to; `tests/rules.test.js` (in
+`tests/page`) checks them on random zoos.
+
+- **Never inbreed:** no plan leaves an adult beside a relative of the other sex. Kin setting
+  `autoContraception` (Contraception near a relative, off by default): contraception covers the
+  time from a young one's maturity to its move, for every species on Auto; off, only the move
+  parts them, and the guards Auto mode set come off once the zoo is read (`kinauto.js guardKin`).
+- **A pregnant or young animal never goes to the trade centre:** `Kin.Move` reads the game's
+  relocate preventers (`bPregnant`, `bJuvenile`) at the moment of the send. Young waiting at the
+  trade centre always go back to a habitat. Kin setting `autoHouseWaiting` (Bring waiting animals
+  into a habitat, off by default): a pregnant female or an adult past selling (within three years
+  of elderly) waiting there goes into a habitat with room, within the game's most per sex and
+  beside no relative of the other sex (`adultBackMoves`); off, Auto mode holds those moves and
+  they wait.
+- **Selling before elderly:** Kin setting `autoEarlySale` (Breeders to storage before elderly, off
+  by default): an Auto species' adult within four years of elderly goes to the trade centre with
+  sell advice, in a species that turns elderly at 40 or later (`kinageing.js sellsBeforeElderly`).
+  The player sells it; Auto mode never sells.
+  Within the server's three years it is never sent at all (see "Trading near elderly").
+- **Clean up** (Auto mode panel) empties the habitats the player ticks, or the whole zoo
+  (`kinautocore.js cleanupRun`, the ledger's `clean`). The whole zoo turns Auto mode off for every
+  species. Habitats leave it on: its breeding plans see none of their animals and put none in
+  (`withoutHabitats`), and once they are empty they are set aside for no species, so Auto mode
+  leaves them empty. A Clean up started, stopped or changed cancels every plan made before it
+  (`kinauto.js planLive`).
+- **Animals rank by the young they give** (`youngQuality`); an animal with a 0 % fertility gene
+  never breeds. A breeder whose young would score well below the best pair's waits at the trade
+  centre, except as many of each sex as the species has habitats set aside.
 
 ## Breeding programme: non-breeders and the make-up (2026-10-19, offline)
 
@@ -900,3 +962,21 @@ All **offline** (decompiled `editors.animal.animalmovementeditmode.lua`,
 - `kinprogramme.js` option `spareOut` (default on): those adults are left out of the solver's fixed room. Afterwards `keepSpares` keeps per habitat and sex only the make-up places (`groupTarget(rule, room)`) that the placed breeders and other staying adults leave free: contracepted first, then own genes. The rest become moves to the trade centre (`spare: true`, reason "over the group make-up ...").
 - Exceptions: pregnant, away, pinned (`pinIds`, Auto mode hands off) animals, and mixed make-ups.
 - The engine benchmarks and the golden record run with `spareOut: false`. Tests: `tests/kinprogramme.test.mjs` "make-up: ..." cases.
+
+## Trading near elderly (proven, Franchise, 2026-10-24)
+
+- The Franchise market refuses every elderly animal, fertile or not (`NotAllowed`). Listing a fertile elderly
+  shark crashed the game on its render thread right after that answer: the mod never lists one (`scores.js
+  isElderly`, `pz2qol.lister.lua` skips maturity 3 and 6).
+- Close to elderly the server refuses too, while the row still says adult and the game still shows the buttons:
+  a listing 0.8 years short (the same crash), a sale 1.9 and releases 2.0 and 2.7 years short, while a release
+  3.1 years short goes through (giraffes, elderly at 32). The mod lists, sells and releases none within three
+  years of the species' elderly age (`isNearlyElderly`, `MARKET_ELDERLY_MARGIN_YEARS`, from the row's age). A
+  release far short of that can pay 0 CC.
+- Each species' elderly age (and its group limits, leader rules and pregnancy length) comes from the game's
+  `animals.fdb`: `speciesrules.js`, written by `tools/gen_species_rules.py --cobra-tools <dir>` (run it again
+  after a game update).
+- A listing the game won't make (`tradeAllowed` false) sends nothing, and most of its reasons pass (an
+  infection, an injury, a transport). The lister takes the run's "If refused" quick action for it only when a
+  reason never passes (`Lister.tLastingProblems`: `NoBirthZoo`, a Frontier zoo's animal); any other skips it,
+  since a quick action is permanent. Add a reason there only once the game has shown it never clears.

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
     ALL_SPECIES, arrivalSkip, cleanName, fetchName, isAllSpecies, ERROR_PAUSE_MS, excludeList, fetchBlockReason, fetchNote, leftLines, parseExclude, pickedText, pickRows, runTradeArrivals,
-    sameKeys, tradeConfirmed, tradeSummary, tradeSummaryText,
+    sameKeys, tradeConfirmed, tradeSummary, tradeSummaryText, skipText,
 } from '../mods/PZ2QoL/UI/UIGameface/js/mods/pz2qol/storagefetchcore.js';
 import { parseCounts, tradeBlockReason } from '../mods/PZ2QoL/UI/UIGameface/js/mods/pz2qol/tradejumpcore.js';
 
@@ -16,10 +16,11 @@ test('names and the exclude list', () => {
         { species: 'Okapi', guid: 'bad guid!', name: 'Bo', sex: 0 },
         { species: 'Lion', guid: '9', name: 'Kesi', sex: 0 },
     ], 'Okapi');
-    assert.equal(ex, 'g:123,n:1:zuri,n:0:bo');
+    // a name carries its species: Bring all spans species, and names repeat across them
+    assert.equal(ex, 'g:123,n:1:okapi:zuri,n:0:okapi:bo');
     const p = parseExclude(ex + ',junk,g:,n:x');
     assert.deepEqual([...p.guids], ['123']);
-    assert.deepEqual([...p.names], ['1:zuri', '0:bo']);
+    assert.deepEqual([...p.names], ['1:okapi:zuri', '0:okapi:bo']);
 });
 
 test('pickRows: species, skips, adults first, cap by room', () => {
@@ -31,11 +32,11 @@ test('pickRows: species, skips, adults first, cap by room', () => {
         row(5, { name: 'Eve', isMoving: true }),
         row(6, { name: 'Fay', auctionTimerSeconds: 300 }),
         row(7, { name: 'Zuri', guid: '123' }),            // in the zoo by guid
-        row(8, { name: 'Zawadi', sex: 1 }),               // in the zoo by name + sex
+        row(8, { name: 'Zawadi', sex: 1 }),               // in the zoo by sex, species and name
         row(9, { name: 'Gus', species: '[Animal_Lion]' }),
         row(10, { name: 'Ada' }),
     ];
-    const exclude = parseExclude('g:123,n:1:zawadi');
+    const exclude = parseExclude('g:123,n:1:okapi:zawadi');
     const all = pickRows(rows, { species: 'Okapi', room: -1, exclude });
     assert.deepEqual(all.picked.map(r => r.name), ['Ada', 'Asha', 'Bo', 'Cleo']);
     assert.deepEqual([all.shoals.length, all.moving.length, all.listed.length, all.here.length, all.left.length], [1, 1, 1, 2, 0]);
@@ -90,10 +91,12 @@ test('arrival checks', () => {
     assert.ok(!tradeConfirmed(null));
     assert.equal(arrivalSkip({ lt: 'other', tc: '5', tcNow: 1, tcMax: 4 }), '');
     assert.equal(arrivalSkip({ lt: 'other', boxed: true, tc: '5' }), ''); // boxed is fine: the Move screen's own sequence
-    assert.equal(arrivalSkip({ gone: true }), 'no longer in the zoo');
-    assert.equal(arrivalSkip({ lt: 'other', tc: '' }), 'this zoo has no trade centre');
-    assert.equal(arrivalSkip({ lt: 'other', tc: '5', tcNow: 4, tcMax: 4 }), 'the trade centre is full');
-    assert.equal(arrivalSkip({ moving: true }), 'already on its way somewhere');
+    // a skip is a code, worded in one place (skipText)
+    const why = f => skipText(arrivalSkip(f));
+    assert.equal(why({ gone: true }), 'no longer in the zoo');
+    assert.equal(why({ lt: 'other', tc: '' }), 'this zoo has no trade centre');
+    assert.equal(why({ lt: 'other', tc: '5', tcNow: 4, tcMax: 4 }), 'the trade centre is full');
+    assert.equal(why({ moving: true }), 'already on its way somewhere');
 });
 
 // A fake game: facts per id, moves recorded with the fake clock.
@@ -177,7 +180,7 @@ test('Bring all: every species, the whole zoo excluded, room cap', () => {
         { species: 'Okapi', guid: '1', name: 'Zuri', sex: 1 },
         { species: 'Lion', guid: '2', name: 'Kesi', sex: 0 },
     ], ALL_SPECIES);
-    assert.equal(ex, 'g:1,n:1:zuri,g:2,n:0:kesi');
+    assert.equal(ex, 'g:1,n:1:okapi:zuri,g:2,n:0:lion:kesi');
     const rows = [
         row(1, { name: 'Asha' }),
         row(2, { name: 'Leo', species: '[Animal_Lion]' }),

@@ -6,11 +6,12 @@
 //    Studbook / Social lists a badge on each relative it shares a habitat
 //    (and a breeding risk) with.
 // All of it is VNodes added to the game's own renders (kinhooks.js).
-import { markKinActive } from '/js/mods/pz2qol/kin.js';
+import { getKinSettings, markKinActive } from '/js/mods/pz2qol/kin.js';
+import { visibleCounts, worstOf } from '/js/mods/pz2qol/kinplannercore.js';
 import { partnerOf, relationWord, SEVERITY_INFO } from '/js/mods/pz2qol/kincore.js';
-import { animalCardContent, habitatCardContent, pairRow, riskSummaryText, sexSymbol, visiblePairs, worstOfCounts } from '/js/mods/pz2qol/kinui.js';
+import { animalCardContent, habitatCardContent, pairRow, riskSummaryText, sexSymbol, visiblePairs } from '/js/mods/pz2qol/kinui.js';
 import {
-    appendVNode, badgeVNode, dsValue, findVNode, gameModule, hasClass, isHudPage, kinSlot, lineVNode, patchRender, unwrap, unwrapUntil,
+    appendVNode, badgeVNode, dsValue, findVNode, gameModule, hasClass, isHudPage, insertAfterVNode, kinSlot, lineVNode, patchRender, unwrap, unwrapUntil,
 } from '/js/mods/pz2qol/kinhooks.js';
 import { openKinPlanner } from '/js/mods/pz2qol/kinplanner.js';
 import { h } from '/js/mods/pz2qol/ui.js';
@@ -34,8 +35,8 @@ function speciesLine(model, habId, species) {
     const s = model.habitatSummaries.get(String(habId));
     if (!s) return null;
     const sp = species ? s.species.find(x => x.species === species) : null;
-    const counts = Object.assign({}, sp ? sp.counts : s.counts);
-    const worst = worstOfCounts(counts);
+    const counts = visibleCounts(sp ? sp.counts : s.counts, getKinSettings().showCovered);
+    const worst = worstOf(counts);
     const text = worst ? riskSummaryText(counts) : (sp ? `No related ${speciesName(species)} pairs` : 'No related breeding pairs');
     const build = pinned => habitatCardContent(model, habId, { pinned, species: sp ? species : null, openPlanner: () => openKinPlanner({ habitatId: String(habId), species: sp ? species : undefined }) });
     return lineVNode(worst, text, { build, extraClass: 'habitatPanel' });
@@ -50,7 +51,7 @@ function patchHabitatAnimals(HabitatAnimals) {
         const species = state && state.viewedSpeciesId;
         const counters = findVNode(vnode, n => hasClass(n, 'HabitatAnimals_genderCountersContainer'));
         if (!counters) return vnode;
-        appendVNode(counters, kinSlot(model => {
+        insertAfterVNode(vnode, counters, kinSlot(model => {
             markKinActive();
             return speciesLine(model, habId, species);
         }));

@@ -20,7 +20,7 @@ import {
     SEVERITY_INFO, Sex, canLocate, explainRelation, habitatSummary, holdReason, mateCandidates, offspringScore, percent, predictOffspring, relationWord,
 } from '/js/mods/pz2qol/kincore.js';
 import {
-    COUNTED, buildMatrix, countWord, kinshipFraction, matrixSig, mateSections, overviewGroups, plannerHabitats, resolveState,
+    buildMatrix, countWord, kinshipFraction, matrixSig, mateSections, overviewGroups, plannerHabitats, resolveState, visibleCounts,
     speciesTabs, stateFromOpen, tierNote, zooCounts,
 } from '/js/mods/pz2qol/kinplannercore.js';
 import {
@@ -34,21 +34,17 @@ import { breadcrumb, reportError } from '/js/mods/pz2qol/errors.js';
 import { cachedStoredAdults, isAskingStored, requestStoredAdults } from '/js/mods/pz2qol/kinmoves.js';
 import { withStored } from '/js/mods/pz2qol/kincore.js';
 import { mutedSpecies, onMuted, setMuted } from '/js/mods/pz2qol/kinmute.js';
-import { BOXED_AFTER_CHOICES } from '/js/mods/pz2qol/kinboxedcore.js';
+import { KIN_SETTINGS, isChoice } from '/js/mods/pz2qol/kinsettings.js';
+import { byName } from '/js/mods/pz2qol/breedwincore.js';
 import { tradeRow } from '/js/mods/pz2qol/tradejump.js';
 import {
-    btn as kitBtn, closeButton, closeOtherPanels, countPills, makeGuard, makeScroll, panelApi, placePanel, refreshBars as kitRefreshBars,
-    registerPanel, restoreScroll, speciesName, switchEl as kitSwitch, trunc, wheelScroll,
+    ago, btn as kitBtn, closeButton, closeOtherPanels, countPills, makeGuard, makeScroll, panelApi, placePanel, refreshBars as kitRefreshBars,
+    registerPanel, remPx, restoreScroll, speciesName, switchEl as kitSwitch, trunc, updateBars, wheelScroll,
 } from '/js/mods/pz2qol/kinpanel.js';
 
 const TICK_MS = 2000;           // markKinActive + "updated N s ago"
 const MATE_LIMIT = 24;          // mate rows before "Show all"
 const CONTRA_PENDING_MS = 6000; // a contraception click waits this long for the scan
-const THRESHOLDS = [
-    { value: 1 / 8, label: '1/8', tip: 'Only half-siblings, grandparents, full aunts and uncles and closer' },
-    { value: 1 / 16, label: '1/16', tip: 'Also first cousins, great-grandparents, half aunts and uncles (default)' },
-    { value: 1 / 32, label: '1/32', tip: 'Also half cousins and other more distant relatives' },
-];
 
 const guard = makeGuard('Kin planner');
 const btn = (...args) => kitBtn(guard, ...args);
@@ -114,8 +110,9 @@ function ensureRoot() {
     el.heat = btn('Breeding heat map', 'Icon_Heatmap', toggleHeatmap, {
         title: "Shows the game's own inbreeding-risk overlay in the world. The overlay uses the game's rule, which may differ from Kin's.",
     });
-    el.settingsBtn = btn('Settings', 'IconSettings', () => setPopover(!S.popover), { title: 'Alerts, names and what counts as close kin' });
-    el.popover = h('div.PZ2QoL_kpPopover');
+    el.settingsBtn = btn('Settings', 'IconSettings', () => setPopover(!S.popover), { title: 'Every setting of the mod: Auto mode, names, escapes and boxes, vivariums, the trade centre, alerts and what counts as close kin' });
+    el.popScroll = makeScroll('popover');
+    el.popover = h('div.PZ2QoL_kpPopover', null, el.popScroll.wrap);
     el.popover.addEventListener('mousedown', e => e.stopPropagation());
     const settingsWrap = h('div.PZ2QoL_kpPopWrap', null, el.settingsBtn, el.popover);
     el.rescan = btn('Rescan', 'Icon_CircleWithArrows', () => {
@@ -123,8 +120,7 @@ function ensureRoot() {
         S.scanAsked = Date.now();
         renderFoot();
     }, { title: 'Read the animals again now' });
-    el.close = h('div.PZ2QoL_kpClose', { title: 'Close (Esc)', onClick: guard('Close', () => closeKinPlanner()) },
-        h('div.PZ2QoL_kpCloseX.a'), h('div.PZ2QoL_kpCloseX.b'));
+    el.close = closeButton(guard, 'Close (Esc)', () => closeKinPlanner());
     const head = h('div.PZ2QoL_kpHead', null,
         h('div.PZ2QoL_kpLogo'),
         h('div.PZ2QoL_kpTitles', null,
@@ -162,14 +158,16 @@ function ensureRoot() {
     // the minimised pill (after Locate or the heat map)
     if (S.mini && S.mini.parentNode) S.mini.parentNode.removeChild(S.mini);
     el.miniText = h('div.PZ2QoL_kpMiniText');
-    el.miniHeat = h('div.PZ2QoL_kpBtn.small', { onClick: guard('Heat map', () => { setBreedingHeatmap(false); restore(); }) }, h('span', { text: 'Turn heat map off' }));
+    el.miniHeat = btn('Turn heat map off', null, () => {
+        setBreedingHeatmap(false);
+        restore();
+    }, { cls: 'small' });
     S.mini = h('div.PZ2QoL_kpMini.hidden', null,
         h('div.PZ2QoL_kpLogo.small'),
         h('div.PZ2QoL_kpMiniTitles', null, h('div.PZ2QoL_kpMiniTitle', { text: 'Kin planner' }), el.miniText),
         el.miniHeat,
-        h('div.PZ2QoL_kpBtn.small.primary', { onClick: guard('Back', restore) }, h('span', { text: 'Back to planner' })),
-        h('div.PZ2QoL_kpClose.small', { title: 'Close the planner', onClick: guard('Close', () => closeKinPlanner()) },
-            h('div.PZ2QoL_kpCloseX.a'), h('div.PZ2QoL_kpCloseX.b')));
+        btn('Back to planner', null, restore, { cls: 'small.primary' }),
+        closeButton(guard, 'Close the planner', () => closeKinPlanner(), true));
     S.mini.addEventListener('mousedown', e => e.stopPropagation());
     document.body.appendChild(S.mini);
     return root;
@@ -267,78 +265,71 @@ function setPopover(on) {
     if (S.popover) renderPopover(getKinSettings());
 }
 
+// The Settings popover: every setting with a section (kinsettings.js), in
+// its order, under its section and sub heads; the muted species after the
+// Trade centre ones.
 function renderPopover(settings) {
-    const p = S.el.popover;
+    const p = S.el.popScroll.content;
     clear(p);
-    p.appendChild(h('div.PZ2QoL_kpPopHead', { text: 'Alerts' }));
-    p.appendChild(switchEl('New inbreeding risks', settings.alerts, () => setKinSettings({ alerts: !getKinSettings().alerts }),
-        'A message when a related pair becomes able to breed (an animal grows up, moves in, or stops contraception)'));
-    const kin = switchEl('Close kin too', settings.alertKin, () => {
-        if (getKinSettings().alerts) setKinSettings({ alertKin: !getKinSettings().alertKin });
-    }, 'Also alert for close relatives the game does not warn about (cousins, grandparents...)');
-    setClass(kin, 'disabled', !settings.alerts);
-    p.appendChild(kin);
-    p.appendChild(switchEl('Animals growing up', settings.alertLife !== false, () => setKinSettings({ alertLife: getKinSettings().alertLife === false }),
-        'A note when a young animal will grow up into a problem: group too big, pushed out of its group, or an inbreeding risk. Nothing when it is fine.'));
-    p.appendChild(h('div.PZ2QoL_kpPopLabel', { text: 'Pop up for' }));
-    p.appendChild(h('div.PZ2QoL_kpSeg', null, [
-        { value: 'action', label: 'Needs you', tip: 'Only notices that need you to act pop up; the rest go to the notice log' },
-        { value: 'heads', label: 'Heads-up too', tip: 'Heads-ups pop up as well' },
-    ].map(t => h(`div.PZ2QoL_kpSegItem${(settings.toastLevel === 'action' ? 'action' : 'heads') === t.value ? '.on' : ''}`, {
-        title: t.tip,
-        'data-toast-level': t.value,
-        onClick: guard('Pop up for', () => setKinSettings({ toastLevel: t.value })),
-    }, h('span', { text: t.label })))));
-    renderBoxedSettings(p, settings);
-    p.appendChild(h('div.PZ2QoL_kpPopHead', { text: 'Trade centre' }));
-    p.appendChild(switchEl('Quarantine sick animals first', settings.quarantineSick !== false, () => setKinSettings({ quarantineSick: getKinSettings().quarantineSick === false }),
-        "When the mod sends an infected or injured animal to the trade centre (a plan, Thin out, the Breeding programme), it goes to a quarantine first: the market won't take a sick animal, and the quarantine gets it treated. When it passes, a notice offers to send it on."));
-    renderMutedList(p);
-    p.appendChild(h('div.PZ2QoL_kpPopHead', { text: 'Show' }));
-    p.appendChild(switchEl('Covered pairs', settings.showCovered, () => setKinSettings({ showCovered: !getKinSettings().showCovered }),
-        'Related pairs kept apart by contraception or infertility'));
-    p.appendChild(switchEl('Pair bonds count as protection', settings.bondHolds !== false, () => setKinSettings({ bondHolds: getKinSettings().bondHolds === false }),
-        'A related pair the game will not let breed because one of them is bonded to another mate (monogamy) shows as Bonded elsewhere, not as a risk. It becomes a risk again when the bond ends.'));
-    p.appendChild(h('div.PZ2QoL_kpPopHead', { text: 'Names' }));
-    p.appendChild(switchEl("Species names in the game's language", settings.gameSpeciesNames !== false,
-        () => setKinSettings({ gameSpeciesNames: getKinSettings().gameSpeciesNames === false }),
-        "On: species names as the game shows them, in your game language. Off: the game's internal species names (e.g. Warthog Common), the same in every language."));
-    p.appendChild(h('div.PZ2QoL_kpPopHead', { text: 'Close kin from' }));
-    const seg = h('div.PZ2QoL_kpSeg', null, THRESHOLDS.map(t => h(`div.PZ2QoL_kpSegItem${Math.abs(settings.closeKinship - t.value) < 1e-9 ? '.on' : ''}`, {
-        title: t.tip,
-        onClick: guard('Close kin', () => setKinSettings({ closeKinship: t.value })),
-    }, h('span', { text: t.label }))));
-    p.appendChild(seg);
-    p.appendChild(h('div.PZ2QoL_kpPopNote', { text: 'Kinship at or above this counts as close kin. 1/16 is first cousins.' }));
+    let section = null, sub = null;
+    for (const s of KIN_SETTINGS) {
+        if (!s.section) continue;
+        if (s.section !== section) {
+            if (section === 'Trade centre') renderMutedList(p);
+            section = s.section;
+            sub = null;
+            p.appendChild(h('div.PZ2QoL_kpPopHead', { text: section }));
+        }
+        if (s.sub && s.sub !== sub) {
+            sub = s.sub;
+            p.appendChild(h('div.PZ2QoL_kpPopSub', { text: sub }));
+        }
+        if (s.choices && s.label) p.appendChild(h('div.PZ2QoL_kpPopLabel', { text: s.label }));
+        p.appendChild(s.choices ? settingChoices(s, settings) : settingSwitch(s, settings));
+        if (s.note) p.appendChild(h('div.PZ2QoL_kpPopNote', { text: s.note }));
+    }
+    setTimeout(guard('Settings', fitPopover), 0);
 }
 
-// Boxed with no destination (kinboxed.js): on/off, after how long, trade centre.
-function renderBoxedSettings(p, settings) {
-    const on = settings.boxedAlert !== false;
-    p.appendChild(switchEl('Boxed with nowhere to go', on, () => setKinSettings({ boxedAlert: getKinSettings().boxedAlert === false }),
-        'A Needs-you alert when an animal waits in its transport box with no destination (the game only warns after a long time)'));
-    const after = Number(settings.boxedAfterS) || 10;
-    const seg = h('div.PZ2QoL_kpSeg.kpBoxedAfter', null, BOXED_AFTER_CHOICES.map(sec => h(`div.PZ2QoL_kpSegItem${after === sec ? '.on' : ''}`, {
-        title: `Alert after ${sec} seconds in the box`,
-        'data-boxed-after': String(sec),
-        onClick: guard('Boxed after', () => setKinSettings({ boxedAfterS: sec })),
-    }, h('span', { text: sec < 60 ? `${sec} s` : `${sec / 60} min` }))));
-    setClass(seg, 'disabled', !on);
-    p.appendChild(seg);
-    const trade = switchEl('Trade centre too', settings.boxedIncludeTrade === true, () => {
-        if (getKinSettings().boxedAlert !== false) setKinSettings({ boxedIncludeTrade: getKinSettings().boxedIncludeTrade !== true });
-    }, 'Also alert for animals waiting boxed at the trade centre (off: they are expected to wait there)');
-    setClass(trade, 'disabled', !on);
-    p.appendChild(trade);
-    p.appendChild(switchEl('Let out stuck aquarium animals', settings.releaseBoxed !== false,
-        () => setKinSettings({ releaseBoxed: getKinSettings().releaseBoxed === false }),
-        "The game sometimes boxes aquarium animals and never lets them out. On: the mod unboxes them after 30 s, one at a time, as the Unbox button does (Franchise too). Off: the game's own behaviour."));
+// The popover hangs from the head: it ends at the planner's bottom edge and
+// scrolls the rest, so the last settings stay in reach on a short screen.
+function fitPopover() {
+    const pop = S.el.popover, box = S.el.popScroll;
+    if (!S.popover || !S.root) return;
+    const room = S.root.getBoundingClientRect().bottom - pop.getBoundingClientRect().top - remPx() * 0.6;
+    const want = box.content.getBoundingClientRect().height + (pop.offsetHeight - pop.clientHeight);
+    pop.style.height = `${Math.round(Math.max(remPx() * 8, Math.min(want, room)))}px`;
+    updateBars(box);
+}
+
+// A setting that needs another one on does nothing while that one is off.
+function settingAllowed(s) {
+    return !s.needs || getKinSettings()[s.needs] === true;
+}
+
+function settingSwitch(s, settings) {
+    const el = switchEl(s.label, settings[s.key] === true, () => {
+        if (settingAllowed(s)) setKinSettings({ [s.key]: getKinSettings()[s.key] !== true });
+    }, s.tip);
+    setClass(el, 'disabled', !!s.needs && settings[s.needs] !== true);
+    return el;
+}
+
+function settingChoices(s, settings) {
+    const seg = h(`div.PZ2QoL_kpSeg${s.needs ? '.dependent' : ''}`, { 'data-setting': s.key }, s.choices.map(c => h(`div.PZ2QoL_kpSegItem${isChoice(settings[s.key], c.value) ? '.on' : ''}`, {
+        title: c.tip,
+        'data-value': String(c.value),
+        onClick: guard(s.label || s.key, () => {
+            if (settingAllowed(s)) setKinSettings({ [s.key]: c.value });
+        }),
+    }, h('span', { text: c.label }))));
+    setClass(seg, 'disabled', !!s.needs && settings[s.needs] !== true);
+    return seg;
 }
 
 // Muted species (no alerts, this zoo): click one to unmute it.
 function renderMutedList(p) {
-    const muted = Array.from(mutedSpecies()).map(sp => ({ sp, name: speciesName(sp) }))
-        .sort((x, y) => (x.name < y.name ? -1 : x.name > y.name ? 1 : 0));
+    const muted = Array.from(mutedSpecies()).map(sp => ({ sp, name: speciesName(sp) })).sort(byName);
     p.appendChild(h('div.PZ2QoL_kpPopSub', { text: `Muted species (${muted.length})` }));
     if (!muted.length) {
         p.appendChild(h('div.PZ2QoL_kpPopNote', { text: 'None. Mute a species from an alert or the Species board; its badges stay.' }));
@@ -514,7 +505,7 @@ function renderHabitat(model, settings) {
     }, 'Show juveniles in the matrix (they are future risks, not current ones)');
     el.appendChild(mainHead(trunc(sum.name || 'Habitat', 34),
         `${sum.kind === 'exhibit' ? 'Exhibit' : 'Habitat'} · ${animals} animal${animals === 1 ? '' : 's'} · ${sum.species.length} species`,
-        h('div.PZ2QoL_kpMainTools', null, countPills(settingsCounts(sum.counts, settings)), young), showPlaceButton(sum)));
+        h('div.PZ2QoL_kpMainTools', null, countPills(visibleCounts(sum.counts, settings.showCovered)), young), showPlaceButton(sum)));
     const tabs = speciesTabs(sum, settings.showCovered);
     if (tabs.length > 1) {
         el.appendChild(h('div.PZ2QoL_kpTabs', null, tabs.map(t => {
@@ -568,10 +559,6 @@ function showPlaceButton(sum) {
             if (locatePlace(sum.id, sample ? sample.id : '')) minimize(`Showing ${sum.name || 'the ' + what}`);
         }),
     }, icon('IconLocation', 'brown', 'xs'), h('span', { text: 'Show in park' }));
-}
-
-function settingsCounts(counts, settings) {
-    return Object.assign({}, counts, { covered: settings.showCovered ? counts.covered : 0 });
 }
 
 function noPairsState(m) {
@@ -927,7 +914,8 @@ function pairDetail(model, settings) {
     if (cover && / by the time /.test(cover)) notes.push(`${cover}, so this pair will not breed.`);
     else {
         for (const x of [a, b]) {
-            if (x.juv || (x.fert && x.fert.state === 'young')) notes.push(`${x.name} is still young (${fertilityText(x)})${pair ? ': this becomes a risk when it grows up.' : '.'}`);
+            // only a 'future' pair turns into a risk: a distant, covered or bonded one does not
+            if (x.juv || (x.fert && x.fert.state === 'young')) notes.push(`${x.name} is still young (${fertilityText(x)})${pair && pair.severity === 'future' ? ': this becomes a risk when it grows up.' : '.'}`);
         }
     }
     for (const n of notes) kids.push(h('div.PZ2QoL_kpBullet', null, h('div.PZ2QoL_kpBulletDot'), h('span', { text: n })));
@@ -1110,14 +1098,6 @@ function mateRow(model, self, cand, rank) {
 
 // ---------------------------------------------------------------- footer
 
-function ago(ms) {
-    const s = Math.round(ms / 1000);
-    if (s < 5) return 'just now';
-    if (s < 60) return `${s} s ago`;
-    const m = Math.round(s / 60);
-    return `${m} min ago`;
-}
-
 function renderFoot() {
     const el = S.el.status;
     if (!el) return;
@@ -1239,6 +1219,8 @@ export function openKinPlanner(opts = {}) {
         requestKinScan('planner');
         markKinActive();
         renderAll();
+        // the park dock's Settings: the planner with its settings open
+        if (o.settings) setPopover(true);
         return true;
     }
     catch (e) {
@@ -1294,6 +1276,7 @@ export function installKinPlanner() {
         if (!S.open || S.minimized) return;
         placeRoot();
         setTimeout(refreshBars, 0);
+        if (S.popover) setTimeout(guard('Settings', fitPopover), 0);
     });
     return true;
 }

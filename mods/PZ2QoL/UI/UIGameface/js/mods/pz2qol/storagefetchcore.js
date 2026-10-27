@@ -1,5 +1,5 @@
 // "Bring to the trade centre": the pure parts, no DOM and no engine, so node
-// tests can run them (tests/storagefetch.test.mjs). See storagefetch.js for
+// tests can run them (tests/storagefetch.test.js). See storagefetch.js for
 // the runtime, pz2qol.storagefetch.lua / pz2qol.storagesend.lua for Lua and
 // docs/PLAN-storage-to-trade-centre.md for the design.
 //
@@ -41,9 +41,15 @@ export function cleanName(s) {
     return String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9 _.-]/g, '').replace(/\s+/g, ' ').trim();
 }
 
+// How a park animal and a Storage row are compared by name: the same sex,
+// species and name ("Bring all" spans species, and names repeat across them).
+function nameKey(sex, species, name) {
+    return `${Number(sex) || 0}:${normSpecies(species)}:${cleanName(name)}`;
+}
+
 // The park's own animals of the species (every species for ALL_SPECIES) as
-// the exclude list Lua carries to the hub: "g:<guid>" and "n:<sex>:<name>"
-// items, comma separated.
+// the exclude list Lua carries to the hub: "g:<guid>" and
+// "n:<sex>:<species>:<name>" items, comma separated.
 export function excludeList(animals, species) {
     const all = isAllSpecies(species);
     const want = normSpecies(species);
@@ -51,21 +57,75 @@ export function excludeList(animals, species) {
     for (const a of animals || []) {
         if (!a || (!all && normSpecies(a.species) !== want)) continue;
         if (a.guid != null && /^[\w.-]+$/.test(String(a.guid))) out.push('g:' + String(a.guid));
-        const n = cleanName(a.name);
-        if (n) out.push(`n:${Number(a.sex) || 0}:${n}`);
+        if (cleanName(a.name) && normSpecies(a.species)) out.push('n:' + nameKey(a.sex, a.species, a.name));
     }
     return Array.from(new Set(out)).join(',');
+}
+
+// Named stored animals (an approved upgrade, a best-fit partner), as
+// "m:<sex>:<F>.<I>.<S>.<L>:<name>" items in the same list. Franchise Storage
+// rows carry no animal GUID the park can match, so the row is the one with
+// that sex, name and all four gene grades (percent). animals: [{ sex, name,
+// genes: [fertility, immunity, size, longevity] }]
+export function matchItems(animals) {
+    return (animals || []).filter(a => a && Array.isArray(a.genes) && a.genes.length === 4 && a.genes.every(Number.isFinite))
+        .map(a => `m:${Number(a.sex) || 0}:${a.genes.map(v => Math.round(v)).join('.')}:${cleanName(a.name)}`).join(',');
+}
+
+// The list Lua carries for one click: the named animals first (Lua refuses
+// a request whose cap would cut through them), then the park's own animals.
+// match: matchItems' animals, or none for every stored one. -> { exclude },
+// or { error } when animals were named but none can be told apart by its
+// genes (bringing every stored one instead is never right).
+export function fetchRequest(animals, species, match) {
+    const named = matchItems(match);
+    if (match && match.length && !named) return { error: 'unnamed' };
+    return { exclude: [named, excludeList(animals, species)].filter(Boolean).join(',') };
 }
 
 export function parseExclude(csv) {
     const guids = new Set();
     const names = new Set();
+    const match = [];
     for (const raw of String(csv == null ? '' : csv).split(',')) {
         const s = raw.trim();
         if (s.startsWith('g:') && s.length > 2) guids.add(s.slice(2));
-        else if (/^n:\d+:./.test(s)) names.add(s.slice(2));
+        else if (s.startsWith('m:')) {
+            const parts = s.split(':');
+            const genes = (parts[2] || '').split('.').map(Number);
+            if (parts.length >= 4 && genes.length === 4 && genes.every(Number.isFinite)) match.push({ sex: Number(parts[1]) || 0, genes, name: parts.slice(3).join(':') });
+        }
+        else if (/^n:\d+:\w+:./.test(s)) names.add(s.slice(2));
     }
-    return { guids, names };
+    return { guids, names, match };
+}
+
+// A Storage row's gene grades in percent, in matchItems' order (the list
+// shows 0..1 or 0..100; null where it shows none)
+function rowGenes(r) {
+    const g = r.genes || {};
+    const pct = v => (typeof v === 'number' ? (v <= 1.5 ? v * 100 : v) : null);
+    return [g.fertility, g.immunity, g.size, g.longevity].map(pct);
+}
+
+// r: { sex, name, genes: { fertility, immunity, size, longevity } }; m: a
+// parseExclude match ({ sex, name (cleanName), genes: [percent x4] })
+export function rowMatches(r, m) {
+    if ((Number(r.sex) || 0) !== m.sex || cleanName(r.name) !== m.name) return false;
+    return rowGenes(r).every((v, i) => v != null && Math.abs(v - m.genes[i]) <= 2);
+}
+
+// ------------------------------------------------------------ hub: request
+
+export const PENDING_MAX_MS = 600000; // Lua drops its request after as long (nPendingSeconds)
+export const FRESH_MAX_MS = 10000;    // a click's Animal Storage comes up within this
+
+// What the hub page does with the request Lua handed it (p: { fresh, at }):
+// 'fresh' (the click just opened Storage: cover it, then count down),
+// 'later' (any other visit: wait for the player's Send) or 'expired' (drop).
+export function handOverState(p, nowMs) {
+    if (!p || nowMs - p.at > PENDING_MAX_MS) return 'expired';
+    return p.fresh && nowMs - p.at < FRESH_MAX_MS ? 'fresh' : 'later';
 }
 
 // ------------------------------------------------------------ hub: rows
@@ -81,19 +141,31 @@ function rank(r) {
 // rows: [{ id, key, name, species, sex, maturity, isShoal, isMoving,
 //   auctionTimerSeconds, guid? }] (the storage list, any species).
 // o: { species (ALL_SPECIES: every one), room (-1 or null: unknown), exclude: parseExclude() }.
-// -> { picked, left (no room), shoals, moving, listed, here }
+// -> { picked, left (no room), shoals, moving, listed, cancel (named but
+// listed: its listing is cancelled first), here }
 export function pickRows(rows, o = {}) {
     const all = isAllSpecies(o.species);
     const want = normSpecies(o.species);
-    const ex = o.exclude || { guids: new Set(), names: new Set() };
-    const out = { picked: [], left: [], shoals: [], moving: [], listed: [], here: [] };
+    const ex = o.exclude || { guids: new Set(), names: new Set(), match: [] };
+    // named animals: each match takes one row
+    const wanted = ex.match && ex.match.length ? ex.match.slice() : null;
+    const out = { picked: [], left: [], shoals: [], moving: [], listed: [], cancel: [], here: [] };
     const ok = [];
     for (const r of rows || []) {
         if (!r || r.id == null || r.key == null || (!all && normSpecies(r.species) !== want)) continue;
+        // named and matched by its genes: it is that stored animal, even
+        // when a park animal has the same game-given name
+        let named = false;
+        if (wanted) {
+            const k = wanted.findIndex(m => rowMatches(r, m));
+            if (k < 0) continue;
+            wanted.splice(k, 1);
+            named = true;
+        }
         if (r.isShoal) out.shoals.push(r);
         else if (r.isMoving) out.moving.push(r);
-        else if (r.auctionTimerSeconds != undefined && r.auctionTimerSeconds > 0) out.listed.push(r);
-        else if ((r.guid != null && ex.guids.has(String(r.guid))) || ex.names.has(`${Number(r.sex) || 0}:${cleanName(r.name)}`)) out.here.push(r);
+        else if (isListedRow(r)) (named ? out.cancel : out.listed).push(r);
+        else if ((r.guid != null && ex.guids.has(String(r.guid))) || (!named && ex.names.has(nameKey(r.sex, r.species, r.name)))) out.here.push(r);
         else ok.push(r);
     }
     ok.sort((a, b) => rank(a) - rank(b) || cleanName(a.name).localeCompare(cleanName(b.name)) || String(a.id).localeCompare(String(b.id)));
@@ -103,6 +175,10 @@ export function pickRows(rows, o = {}) {
     out.picked = ok.slice(0, cap);
     out.left = ok.slice(cap);
     return out;
+}
+
+export function isListedRow(r) {
+    return r.auctionTimerSeconds != undefined && r.auctionTimerSeconds > 0;
 }
 
 export function sameSpecies(a, b) {
@@ -130,6 +206,17 @@ export function pickedText(p, room) {
 }
 
 // Lines about the rows that stay (empty when none).
+// The card's lines on the listings a named fetch cancelled first (listed:
+// the rows it tried, still: the ones the game left on the market).
+export function cancelLines(listed, still) {
+    const off = listed.filter(r => !still.includes(r));
+    const names = rows => rows.map(r => r.name || 'an animal').join(', ');
+    const out = [];
+    if (off.length) out.push(`Took ${names(off)} off the market.`);
+    if (still.length) out.push(`${names(still)} ${still.length === 1 ? 'stays' : 'stay'} on the market: the game did not cancel ${still.length === 1 ? 'the listing' : 'the listings'}. Cancel it in Storage and bring ${still.length === 1 ? 'it' : 'them'} again.`);
+    return out;
+}
+
 export function leftLines(p) {
     const out = [];
     if (p.left.length) {
@@ -143,15 +230,55 @@ export function leftLines(p) {
     return out;
 }
 
+// ---------------------------------------------------------------- messages
+
+// What the player reads for each code Lua or a run gives: the hub-opening
+// codes (shared with tradejump.js), the Bring click's own, and the line of
+// an animal a run skipped (shared with storagesendcore.js).
+export const HUB_OPEN_ERRORS = Object.freeze({
+    nobuilding: 'Build a trade centre to use Market & Storage',
+    nopark: 'Only while a zoo is running',
+    nohub: "The game's hub could not be reached. Try again, or use the Market & Storage button.",
+    badspecies: 'This species has no name the hub knows',
+    busy: 'Already opening the hub…',
+});
+
+export const START_ERRORS = Object.freeze(Object.assign({}, HUB_OPEN_ERRORS, {
+    notradecentre: 'Build a trade centre first',
+    full: 'The trade centre is full',
+    nohud: "The game's hub could not be opened from here. Open Animal Storage with the Market & Storage button and send them from there.",
+    noanswer: 'The game did not answer. Try again in a moment.',
+    nozoo: 'The game has not named this zoo yet, so the mod cannot be sure the animals come back here. Wait a few seconds and click Bring again.',
+    unnamed: "The animals to bring have no gene grades the mod can match in Storage, so nothing was sent. Tick them in Animal Storage and use Send to Zoo yourself.",
+    toolong: "Too many animals named for one request, so nothing was sent. Tick them in Animal Storage and use Send to Zoo yourself.",
+}));
+
+export const SKIP_TEXT = Object.freeze({
+    noanswer: 'the game did not answer',
+    nopark: 'no park is running',
+    gone: 'no longer in the zoo',
+    dead: 'no longer alive',
+    moving: 'already on its way somewhere',
+    notradecentre: 'this zoo has no trade centre',
+    full: 'the trade centre is full',
+    unconfirmed: 'not confirmed by the game in time',
+    stopped: 'stopped before the game confirmed it',
+});
+
+// A skip code as its line (a code the catalog lacks is the game's own text).
+export function skipText(code) {
+    return SKIP_TEXT[code] || String(code);
+}
+
 // ------------------------------------------------------------ park: button
 
 // '' when the button can be used, else why not.
 // s: { tradeBlock (canOpenTrade() text), hasTradeCentre, tcNow, tcMax, adults (null: unknown) }
 export function fetchBlockReason(s = {}) {
     if (s.tradeBlock) return s.tradeBlock;
-    if (s.hasTradeCentre === false) return 'Build a trade centre first';
+    if (s.hasTradeCentre === false) return START_ERRORS.notradecentre;
     if (Number.isFinite(s.tcNow) && Number.isFinite(s.tcMax) && s.tcNow >= s.tcMax) {
-        return s.mode === 'franchise' ? `Your storage is full (all zoos, ${s.tcNow}/${s.tcMax})` : `The trade centre is full (${s.tcNow}/${s.tcMax})`;
+        return s.mode === 'franchise' ? `Your storage is full (all zoos, ${s.tcNow}/${s.tcMax})` : `${START_ERRORS.full} (${s.tcNow}/${s.tcMax})`;
     }
     return '';
 }
@@ -172,18 +299,6 @@ export function fetchNote(s = {}) {
     return `${plural(s.adults, 'adult', 'adults')} in storage (+ any young)${tc}`;
 }
 
-export const START_ERRORS = Object.freeze({
-    notradecentre: 'Build a trade centre first',
-    full: 'The trade centre is full',
-    nobuilding: 'Build a trade centre to use Market & Storage',
-    nopark: 'Only while a zoo is running',
-    nohub: "The game's hub could not be reached",
-    nohud: "The game's hub could not be opened from here",
-    badspecies: 'This species has no name the hub knows',
-    noanswer: 'The game did not answer',
-    busy: 'Already opening the hub…',
-});
-
 // --------------------------------------------------------- park: arrivals
 
 // Is the animal in the trade centre, or on its way (the game confirmed it)?
@@ -191,18 +306,21 @@ export function tradeConfirmed(f) {
     return !!f && !f.error && !f.gone && (f.lt === 'trade' || f.moving === true);
 }
 
-// Why an arrival can't be sent ('' when it can). Already in the trade
-// centre is not a skip (see runTradeArrivals).
+// Why an arrival can't be sent, as a SKIP_TEXT code ('' when it can).
+// Already in the trade centre is not a skip (see runTradeArrivals).
 export function arrivalSkip(f) {
-    if (!f) return 'the game did not answer';
-    if (f.error) return f.error === 'nopark' ? 'no park is running' : String(f.error);
-    if (f.gone) return 'no longer in the zoo';
-    if (f.alive === false) return 'no longer alive';
-    if (f.moving) return 'already on its way somewhere';
-    if (f.tc === '') return 'this zoo has no trade centre';
-    if (Number.isFinite(f.tcNow) && Number.isFinite(f.tcMax) && f.tcNow >= f.tcMax) return 'the trade centre is full';
+    if (!f) return 'noanswer';
+    if (f.error) return String(f.error);
+    if (f.gone) return 'gone';
+    if (f.alive === false) return 'dead';
+    if (f.moving) return 'moving';
+    if (f.tc === '') return 'notradecentre';
+    if (Number.isFinite(f.tcNow) && Number.isFinite(f.tcMax) && f.tcNow >= f.tcMax) return 'full';
     return '';
 }
+
+// Skipped arrivals the game's own Move screen can still place.
+const LEFT_FOR_MOVE_SCREEN = new Set(['full', 'noanswer']);
 
 // The run. deps:
 //   facts(id)       -> Promise<facts|null>   (PZ2QoL_SendFacts)
@@ -252,10 +370,10 @@ export async function runTradeArrivals(ids, deps) {
             state.stopped = true;
             break;
         }
-        const reason = arrivalSkip(f);
-        if (reason) {
+        const code = arrivalSkip(f);
+        if (code) {
             // nothing was sent to the game: no pause needed
-            skip(id, f, reason, reason === 'the trade centre is full' || reason === 'the game did not answer');
+            skip(id, f, skipText(code), LEFT_FOR_MOVE_SCREEN.has(code));
             update({});
             continue;
         }
@@ -276,15 +394,22 @@ export async function runTradeArrivals(ids, deps) {
         }
         const since = d.now();
         let ok = false;
-        while (d.now() - since < CONFIRM_TIMEOUT_MS) {
+        for (;;) {
             if (tradeConfirmed(await d.facts(id))) {
                 ok = true;
                 break;
             }
+            // after Stop the sleep returns at once: one last look, then out
+            if (d.isStopped() || d.now() - since >= CONFIRM_TIMEOUT_MS) break;
             await d.sleep(CONFIRM_POLL_MS);
         }
+        if (!ok && d.isStopped()) {
+            skip(id, f, SKIP_TEXT.stopped, true);
+            update({});
+            break;
+        }
         if (!ok) {
-            skip(id, f, 'not confirmed by the game in time', true);
+            skip(id, f, SKIP_TEXT.unconfirmed, true);
             update({});
             await d.sleep(d.online ? Math.max(ERROR_PAUSE_MS, d.paceMs()) : d.paceMs());
             continue;

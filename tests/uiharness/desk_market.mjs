@@ -299,8 +299,12 @@ export async function frontend(page, ctx) {
         // sort by genes, worst first
         await click(page.locator('.PZ2QoL_mdRow.head .PZ2QoL_mdCell.genes'));
         await page.waitForTimeout(250);
-        const worst = (await geneVals()).filter(v => v !== '–').map(Number);
-        facts.worstFirst = worst;
+        // sellable rows first, then the blocked ones: each group by genes
+        const worstBy = await page.evaluate(() => {
+            const vals = sel => [...document.querySelectorAll(sel)].map(n => n.innerText).filter(v => v !== '–').map(Number);
+            return { sellable: vals('.PZ2QoL_mdRow[data-id]:not(.blocked) .PZ2QoL_mdCell.genes'), blocked: vals('.PZ2QoL_mdRow[data-id].blocked .PZ2QoL_mdCell.genes') };
+        });
+        facts.worstFirst = worstBy;
         await click(page.locator('.PZ2QoL_md .PZ2QoL_kpBtn', { hasText: 'More filters' }));
         await page.waitForTimeout(300);
         facts.more = await page.evaluate(() => ({
@@ -319,7 +323,9 @@ export async function frontend(page, ctx) {
         await page.waitForTimeout(300);
         facts.afterReset = await page.evaluate(() => document.querySelectorAll('.PZ2QoL_mdRow[data-id]').length);
         if (facts.afterReset !== allRows) problems.push(`after Reset ${facts.afterReset} rows, before ${allRows}`);
-        if (worst.some((v, i) => i && v < worst[i - 1])) problems.push(`worst first not ascending: ${JSON.stringify(worst)}`);
+        for (const [group, worst] of Object.entries(worstBy)) {
+            if (worst.some((v, i) => i && v < worst[i - 1])) problems.push(`worst first not ascending (${group}): ${JSON.stringify(worst)}`);
+        }
 
         // 1c. ticks follow the view: ticks of one species go when another is picked
         const sps = facts.open.species.filter(s => s);
@@ -369,11 +375,12 @@ export async function frontend(page, ctx) {
         await page.waitForTimeout(300);
         facts.ticked = await page.evaluate(() => ({
             on: document.querySelectorAll('.PZ2QoL_mdRow.on').length,
-            sellableShown: [...document.querySelectorAll('.PZ2QoL_mdRow[data-id]')].filter(n => !n.classList.contains('blocked')).length,
+            // what Tick all takes: sellable rows, none tagged Keep in storage
+            tickable: Number(([...document.querySelectorAll('.PZ2QoL_mdTools .PZ2QoL_kpBtn')].map(n => n.innerText).find(t => /^Tick all shown/.test(t)) || '').replace(/\D+/g, '')),
             big: (document.querySelector('.PZ2QoL_mdBig .n') || {}).innerText,
             list: [...document.querySelectorAll('.PZ2QoL_mdSide .PZ2QoL_kpBtn')].map(n => n.innerText),
         }));
-        if (!facts.ticked.on || facts.ticked.on !== facts.ticked.sellableShown) problems.push(`ticked ${facts.ticked.on} of ${facts.ticked.sellableShown} sellable`);
+        if (!facts.ticked.on || facts.ticked.on !== facts.ticked.tickable) problems.push(`ticked ${facts.ticked.on} of ${facts.ticked.tickable} tickable`);
         await ctx.shot(page, 'md_2_ticked');
         // List waits for this species' price check (the button right above it)
         facts.gate = await page.evaluate(() => ({
@@ -521,12 +528,12 @@ export async function frontend(page, ctx) {
         await click(page.locator('.PZ2QoL_md .PZ2QoL_kpBtn', { hasText: 'Read storage again' }));
         await page.waitForTimeout(800);
 
-        // 5. no engine: the fallback pill (no listing here; the lister scenario covers the old path)
+        // 5. no engine: nothing lists (the desk lists only through the Lua engine)
         await page.evaluate(() => { window.__md.active = false; });
         await click(page.locator('.PZ2QoL_md .PZ2QoL_kpBtn', { hasText: 'Read storage again' }));
         await page.waitForTimeout(3500);
         facts.fallbackPill = await page.evaluate(() => (document.querySelector('.PZ2QoL_mdEnginePill') || {}).innerText || '');
-        if (!/Fallback/.test(facts.fallbackPill)) problems.push(`no-engine pill: "${facts.fallbackPill}"`);
+        if (!/not ready/.test(facts.fallbackPill)) problems.push(`no-engine pill: "${facts.fallbackPill}"`);
         await ctx.shot(page, 'md_6_fallback');
 
         // 6. Esc closes

@@ -348,15 +348,19 @@ export async function frontend(page, ctx) {
         if (facts.ticks.quick || facts.ticks.rehome || facts.ticks.quickClicked || facts.ticks.big !== facts.before.shownRows - 2) problems.push(`ticks: ${JSON.stringify(facts.ticks)}`);
         await click(page.locator('.PZ2QoL_mdTools .PZ2QoL_kpBtn', { hasText: 'Untick shown' }));
 
-        // 5. the page's report to the engine: v2, read from the real DataStore
+        // 5. the page's report to the engine: v2, read from the real DataStore,
+        // its fields by name (pz2qol.lister.lua ParseSeen decodes it)
         facts.seen = await page.evaluate(async () => {
-            const { decodeSeen } = await import('/js/mods/pz2qol/listercore.js');
+            const { SEEN_FIELDS } = await import('/js/mods/pz2qol/listercore.js');
             const f = window.__mq;
             const first = f.seen[0] || '';
-            return { n: f.seen.length, key: f.watchKey, head: first.slice(0, 40), decoded: decodeSeen(first), dsError: f.dsError };
+            const parts = first.split('|');
+            const at = name => decodeURIComponent(parts[SEEN_FIELDS.indexOf(name)] || '');
+            const fields = ['version', 'key', 'allowed', 'reason', 'quickTrade', 'quickTradeValue'];
+            return { n: f.seen.length, key: f.watchKey, head: first.slice(0, 40), fields: Object.fromEntries(fields.map(n => [n, at(n)])), dsError: f.dsError };
         });
-        const d = facts.seen.decoded;
-        if (!facts.seen.n || !d || d.v !== 2 || d.key !== facts.seen.key || !d.quick || d.quick.quickTradeAllowed !== true || d.quick.quickTradeValue !== '$1,200' || d.allowed !== false || !/NoBirthZoo/.test(d.reason)) problems.push(`page report v2: ${JSON.stringify(facts.seen)}`);
+        const d = facts.seen.fields;
+        if (!facts.seen.n || d.version !== 'v2' || d.key !== facts.seen.key || d.quickTrade !== '1' || d.quickTradeValue !== '$1,200' || d.allowed !== '0' || !/NoBirthZoo/.test(d.reason)) problems.push(`page report v2: ${JSON.stringify(facts.seen)}`);
 
         // 6. Read storage again: the categories are checked afresh
         await click(page.locator('.PZ2QoL_md .PZ2QoL_kpBtn', { hasText: 'Read storage again' }));

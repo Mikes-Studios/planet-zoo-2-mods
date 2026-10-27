@@ -22,23 +22,29 @@
 // own Move-screen trade-centre sequence per animal.
 import { loadCSS } from '/js/common/util/CSSUtil.js';
 import { breadcrumb, reportError } from '/js/mods/pz2qol/errors.js';
-import { childKey, childrenOf, get, locationName, STORAGE_ACTIONS, STORAGE_DATA, STORAGE_LIST } from '/js/mods/pz2qol/game.js';
+import { dlog } from '/js/mods/pz2qol/debuglog.js';
+import { childrenOf, get, locationName, readAnimal, STORAGE_ACTIONS, STORAGE_DATA, STORAGE_LIST } from '/js/mods/pz2qol/game.js';
 import { getStorageKinModel, isBreedingHeatmapOn, setBreedingHeatmap } from '/js/mods/pz2qol/kin.js';
 import { isFrontendPage, isHudPage } from '/js/mods/pz2qol/kinhooks.js';
 import { nativeFiltersOn } from '/js/mods/pz2qol/listercore.js';
 import { deskFilters } from '/js/mods/pz2qol/listerlua.js';
 import { getStorageFilters, setStorageFilters } from '/js/mods/pz2qol/listfilter.js';
+import { DEFAULT_STORAGE_FILTERS } from '/js/mods/pz2qol/scores.js';
 import { speciesName } from '/js/mods/pz2qol/speciesnames.js';
 import { armAndSend } from '/js/mods/pz2qol/storagesend.js';
 import { canOpenTrade, getStorageCounts, getTradeCentreInfo, requestStorageCounts } from '/js/mods/pz2qol/tradejump.js';
-import { h, icon } from '/js/mods/pz2qol/ui.js';
+import { h, icon, setText, visibilityWatch } from '/js/mods/pz2qol/ui.js';
 import {
-    ALL_SPECIES, COUNTDOWN_MS, excludeList, fetchName, isAllSpecies, sameSpecies, fetchBlockReason, fetchNote, leftLines, parseExclude, pickedText, pickRows, sameKeys, START_ERRORS, TICK_WAIT_MS,
+    ALL_SPECIES, cancelLines, COUNTDOWN_MS, fetchName, fetchRequest, handOverState, isAllSpecies, isListedRow, sameSpecies, fetchBlockReason, fetchNote, leftLines, parseExclude, pickedText, pickRows, sameKeys, START_ERRORS, TICK_WAIT_MS,
 } from '/js/mods/pz2qol/storagefetchcore.js';
 
 const ANSWER_TIMEOUT_MS = 6000;
 const ROWS_WAIT_MS = 3000;
 const GUID_WAIT_MS = 3000;
+// picking named animals: how long the list may take to show them all
+const NAMED_WAIT_MS = 20000;
+// the server takes a listing off the market within this
+const CANCEL_WAIT_MS = 10000;
 const HUB_TICK_MS = 500;
 const ERROR_SHOW_MS = 9000;
 
@@ -87,6 +93,8 @@ function askStart(species, exclude) {
 let starting = false;
 let lastError = null; // { species, text, until }
 
+// opts.match: the stored animals to bring, none else ([{ sex, name, genes }],
+// an approved upgrade or a best-fit partner; matchItems)
 async function start(model, species, opts) {
     if (starting) return { ok: false, text: START_ERRORS.busy };
     starting = true;
@@ -102,14 +110,23 @@ async function start(model, species, opts) {
         }
         const animals = model && model.animals ? Array.from(model.animals.values()) : [];
         breadcrumb('fetch_click');
-        const r = await askStart(species, excludeList(animals, species));
+        const req = fetchRequest(animals, species, opts && opts.match);
+        if (req.error) return { ok: false, text: START_ERRORS[req.error] };
+        const r = await askStart(species, req.exclude);
         if (r.ok) return { ok: true, text: '' };
         breadcrumb('fetch_click_failed');
-        return { ok: false, text: START_ERRORS[r.detail] || `The hub did not open (${r.detail})` };
+        return { ok: false, text: START_ERRORS[r.detail] || `The hub did not open (${r.detail}). Try again, or use the Market & Storage button.` };
     }
     finally {
         starting = false;
     }
+}
+
+// "Bring <species> to the trade centre" from an Auto mode notice: the same
+// flow as the Species board's row; match: the animals to bring, none else.
+// Resolves { ok, text }.
+export function bringFromStorage(model, species, { match = null } = {}) {
+    return start(model, species, { match });
 }
 
 // The Species board's "Bring <species> to the trade centre" row (pinned trade
@@ -175,22 +192,10 @@ function buildRow(model, species, opts) {
 
 // ------------------------------------------------------------------- hub
 
-let pending = null;       // { seq, species, room, exclude, fresh }
+let pending = null;       // { seq, species, room, exclude, fresh, at }
 let job = null;           // the request being worked on
 const done = new Set();   // seqs sent or cancelled
 let card = null;
-let visibleSince = 0;
-
-function isVisible(sel) {
-    const node = document.querySelector(sel);
-    if (!node) return false;
-    const r = node.getBoundingClientRect();
-    if (r.width <= 0 || r.height <= 0) return false;
-    for (let n = node; n && n !== document.body; n = n.parentNode) {
-        if (n.classList && n.classList.contains('hidden')) return false;
-    }
-    return true;
-}
 
 function trigger(name, ...args) {
     try {
@@ -210,19 +215,21 @@ function selected() {
 function storageRows() {
     const model = getStorageKinModel();
     return childrenOf(STORAGE_LIST).map(ctx => {
-        const id = get(ctx, 'id');
-        const a = model && id != null ? model.animals.get(String(id)) : null;
+        const row = readAnimal(ctx);
+        const kin = model && row.id != null ? model.animals.get(String(row.id)) : null;
         return {
-            id: id == null ? null : String(id),
-            key: childKey(ctx),
-            name: locationName(get(ctx, 'name')) || '',
-            species: get(ctx, 'species'),
-            sex: get(ctx, 'gender'),
-            maturity: get(ctx, 'maturity'),
-            isShoal: !!get(ctx, 'isShoal'),
-            isMoving: !!get(ctx, 'isMoving'),
-            auctionTimerSeconds: get(ctx, 'auctionTimerSeconds'),
-            guid: a && a.guid ? String(a.guid) : null,
+            id: row.id == null ? null : String(row.id),
+            key: row.key,
+            name: locationName(row.name) || '',
+            species: row.species,
+            sex: row.gender,
+            maturity: row.maturity,
+            isShoal: row.isShoal,
+            isMoving: row.isMoving,
+            auctionTimerSeconds: row.auctionTimerSeconds,
+            location: locationName(get(ctx, 'location')) || '',
+            guid: kin && kin.guid ? String(kin.guid) : null,
+            genes: row.genes,
         };
     });
 }
@@ -233,11 +240,12 @@ function closeCard() {
     card = null;
 }
 
-// The species chip was only the job's means: take it off again (unless the
-// player has picked something else meanwhile).
+// The job's filters were only its means: put the player's back (unless
+// they have picked something else meanwhile).
 function dropChip(j) {
     try {
-        if (j && j.chip && sameSpecies((getStorageFilters() || {}).species, j.species)) setStorageFilters({ species: '' });
+        const now = (getStorageFilters() || {}).species;
+        if (j && j.filters && (j.chip ? sameSpecies(now, j.species) : !now)) setStorageFilters(j.filters);
     }
     catch (e) {
         // the chip stays; one click clears it
@@ -270,8 +278,6 @@ function cardButton(text, onClick, cls = '') {
 // the player shouldn't watch the list being filtered and ticked), with the
 // card in the middle. It also stops stray clicks changing the selection.
 let curtain = null;
-let waitingSince = 0; // a request is in, Storage is not on screen yet
-const WAITING_MAX_MS = 10000;
 const SENT_SHOW_MS = 8000;
 
 function openCurtain() {
@@ -295,6 +301,10 @@ function renderWaiting(p) {
     panel(`Bringing your ${fetchName(p.species, speciesName)} to the trade centre`, [h('div.PZ2QoL_ssLine', { text: 'Opening your Animal Storage…' })], { busy: true });
 }
 
+function countdownText(j) {
+    return `Sending in ${Math.max(1, Math.ceil((j.deadline - Date.now()) / 1000))}…`;
+}
+
 function render() {
     if (!job) return closeCard();
     const j = job;
@@ -307,8 +317,8 @@ function render() {
         panel(title, lines, { busy: true, buttons: [cardButton('Cancel', () => cancel())] });
     }
     else if (j.phase === 'countdown') {
-        const s = Math.max(1, Math.ceil((j.deadline - Date.now()) / 1000));
-        lines.push(h('div.PZ2QoL_ssLine.done', { text: `Sending in ${s}…` }));
+        j.countdownLine = h('div.PZ2QoL_ssLine.done', { text: countdownText(j) });
+        lines.push(j.countdownLine);
         panel(title, lines, { busy: true, buttons: [cardButton('Send now', () => send()), cardButton('Cancel', () => cancel(), 'stop')] });
     }
     else if (j.phase === 'ready') {
@@ -339,6 +349,7 @@ function stop(text, { keep = false } = {}) {
     job.phase = 'stopped';
     job.stop = text;
     breadcrumb('fetch_hub_stop');
+    dlog('fetch', 'stopped', { species: job.species, why: text });
     render();
 }
 
@@ -363,6 +374,7 @@ function send() {
     render();
     if (!armAndSend(now, 'trade')) return stop('The game could not be asked; nothing was sent.');
     breadcrumb('fetch_hub_sent');
+    dlog('fetch', 'sent', { species: j.species, animals: now.length });
     // the hub page outlives the switch to the zoo and is drawn over it: the
     // curtain must go even if Storage still reads as visible (proven 2026-10-18)
     setTimeout(() => {
@@ -380,19 +392,19 @@ async function waitFor(test, ms) {
 }
 
 async function runJob(p) {
+    // a sent job still on screen hands its chip back first: what this job
+    // keeps as the player's filters must not be that job's chip
+    if (job) endJob();
     const all = isAllSpecies(p.species);
     const j = job = { seq: p.seq, species: p.species, name: fetchName(p.species, speciesName), room: p.room, fresh: p.fresh, phase: 'prepare', notes: [], keys: [], pick: null, timer: null };
     render();
     breadcrumb(p.fresh ? 'fetch_hub_start' : 'fetch_hub_again');
     const alive = () => job === j && j.phase === 'prepare';
-    // all species: no chip, and none left from an earlier species jump
-    if (all) {
-        if ((getStorageFilters() || {}).species) setStorageFilters({ species: '' });
-    }
-    else {
-        setStorageFilters({ species: p.species });
-        j.chip = true;
-    }
+    // the mod's own chips hide rows, and a hidden row never stays ticked:
+    // the job shows every animal of its species (all species: no chip)
+    j.filters = getStorageFilters();
+    j.chip = !all;
+    setStorageFilters(Object.assign({}, DEFAULT_STORAGE_FILTERS, { species: all ? '' : p.species }));
     // the game's own filters may hide some of them: clear them as the Market
     // desk does (put back when Storage closes)
     const active = nativeFiltersOn(k => get(STORAGE_DATA.concat('filters'), k));
@@ -406,11 +418,34 @@ async function runJob(p) {
     if (!alive()) return;
     const exclude = parseExclude(p.exclude);
     // the park's animals are matched by GUID when the storage lineage is in
-    if (exclude.guids.size) await waitFor(() => !!getStorageKinModel(), GUID_WAIT_MS);
+    if (exclude.match.length) {
+        // named animals: the list loads in steps, so wait until every one
+        // of them is on screen
+        await waitFor(() => {
+            const named = pickRows(storageRows(), { species: p.species, room: -1, exclude });
+            return named.picked.length + named.cancel.length >= exclude.match.length;
+        }, NAMED_WAIT_MS);
+    }
+    else if (exclude.guids.size) await waitFor(() => !!getStorageKinModel(), GUID_WAIT_MS);
     if (!alive()) return;
-    const pick = pickRows(storageRows(), { species: p.species, room: p.room, exclude });
+    let pick = pickRows(storageRows(), { species: p.species, room: p.room, exclude });
+    if (pick.cancel.length) {
+        const listed = pick.cancel;
+        const still = await cancelListings(listed, alive);
+        if (!still) return;
+        pick = pickRows(storageRows(), { species: p.species, room: p.room, exclude });
+        j.notes.push(...cancelLines(listed, still));
+    }
     j.pick = pick;
     j.notes.push(...leftLines(pick));
+    dlog('fetch', 'pick', {
+        species: p.species, room: p.room, picked: pick.picked.length, left: pick.left.length, listed: pick.listed.length,
+        moving: pick.moving.length, here: pick.here.length, shoals: pick.shoals.length,
+        named: exclude.match.map(m => `${m.name}/${m.sex}/${m.genes.join('.')}`).join(' '),
+    });
+    for (const r of pick.picked) dlog('fetch', 'picked', { name: r.name, species: r.species, sex: r.sex, maturity: r.maturity, location: r.location });
+    if (!pick.picked.length && pick.cancel.length) return stop(j.notes.join(' '));
+    if (!pick.picked.length && exclude.match.length) return stop(`The ${j.name} the notice named ${exclude.match.length === 1 ? 'is' : 'are'} not in Storage any more (moved, listed or sold since). Nothing was sent.`);
     if (!pick.picked.length) return stop(all ? 'Nothing in storage to bring.' : `No ${j.name} in storage to bring.`);
     j.keys = pick.picked.map(r => String(r.key));
     trigger('AnimalStorage_SelectAllToggled', false);
@@ -425,10 +460,11 @@ async function runJob(p) {
     if (p.fresh) {
         j.phase = 'countdown';
         j.deadline = Date.now() + COUNTDOWN_MS;
+        // only the number changes: rebuilding the card would drop a click on Cancel mid-press
         j.timer = setInterval(() => {
             if (job !== j || j.phase !== 'countdown') return clearInterval(j.timer);
             if (Date.now() >= j.deadline) send();
-            else render();
+            else setText(j.countdownLine, countdownText(j));
         }, 250);
     }
     else {
@@ -437,19 +473,54 @@ async function runJob(p) {
     render();
 }
 
+// The named animals on the market: each listing is cancelled as the game's
+// own Cancel trade button does: the row clicked (AnimalStorage_ItemSelected,
+// the storage's selected item, which a ticked box is not), then
+// AnimalStorage_Cancel 'Trade'; then waited for until its row shows it off
+// the market.
+// -> the rows still listed, or null when the job ended meanwhile
+async function cancelListings(rows, alive) {
+    const still = [];
+    for (const r of rows) {
+        trigger('AnimalStorage_SelectAllToggled', false);
+        trigger('AnimalStorage_ItemSelected', r.id);
+        const only = () => sameKeys(selected(), [String(r.key)]);
+        let one = await waitFor(only, TICK_WAIT_MS);
+        if (!alive()) return null;
+        // the selected item need not show as ticked: its box as well
+        if (!one) {
+            trigger('AnimalStorage_ItemCheckboxToggled', r.id, true);
+            one = await waitFor(only, TICK_WAIT_MS);
+            if (!alive()) return null;
+        }
+        if (one) trigger('AnimalStorage_Cancel', 'Trade');
+        const off = one && await waitFor(() => {
+            const now = storageRows().find(x => x.key === r.key);
+            return !!now && !isListedRow(now);
+        }, CANCEL_WAIT_MS);
+        if (!alive()) return null;
+        dlog('fetch', 'cancel_listing', { name: r.name, species: r.species, ticked: one, off });
+        if (!off) still.push(r);
+    }
+    trigger('AnimalStorage_SelectAllToggled', false);
+    return still;
+}
+
 function hello() {
     trigger('PZ2QoL_FetchHello');
 }
 
+// Animal Storage comes up: only Lua knows whether an older request still
+// holds (same zoo, not acked), and it hands it over again in answer to the hello
+const storageShown = visibilityWatch('.AnimalMarketStorage_header', at => {
+    if (handOverState(pending, at) !== 'fresh') pending = null;
+    hello();
+});
+
 function hubTick() {
     try {
-        const vis = isVisible('.AnimalMarketStorage_header');
-        if (vis && !visibleSince) {
-            visibleSince = Date.now();
-            hello();
-        }
+        const vis = storageShown() > 0;
         if (!vis) {
-            visibleSince = 0;
             if (job) {
                 // Storage left (or the zoo loaded after the send): the curtain
                 // goes. Left before sending: nothing is sent; Lua keeps the
@@ -457,28 +528,24 @@ function hubTick() {
                 if (job.phase !== 'sent' && job.phase !== 'stopped') breadcrumb('fetch_hub_left');
                 endJob();
             }
-            // a request is in and Storage is on its way: cover it from the
-            // first frame (at most WAITING_MAX_MS, then the request waits)
-            if (pending) {
-                if (!waitingSince) waitingSince = Date.now();
-                if (Date.now() - waitingSince < WAITING_MAX_MS) renderWaiting(pending);
-                else closeCard();
-            }
-            else if (waitingSince) {
-                waitingSince = 0;
-                closeCard();
-            }
+            const state = handOverState(pending, Date.now());
+            if (state === 'expired') pending = null;
+            // the click just opened Storage: cover it from the first frame.
+            // Any other hand-over leaves the hub alone until Storage shows
+            if (state === 'fresh') renderWaiting(pending);
+            else if (curtain) closeCard();
             return;
         }
-        waitingSince = 0;
         // a finished job never blocks the next request
         if (pending && job && (job.phase === 'sent' || job.phase === 'stopped')) endJob();
         if (!pending || job) return;
         const p = pending;
         pending = null;
-        runJob(p).catch(e => {
+        const state = handOverState(p, Date.now());
+        if (state === 'expired') return;
+        runJob(Object.assign({}, p, { fresh: state === 'fresh' })).catch(e => {
             reportError('mod', 'Bring to the trade centre (storage) failed', e);
-            if (job) stop('Something went wrong; nothing was sent.', { keep: true });
+            if (job) stop(`Something went wrong (${(e && e.message) || e}), so nothing was sent. Open Animal Storage again to retry, or tick the animals and use Send to Zoo yourself.`, { keep: true });
         });
     }
     catch (e) {
@@ -492,8 +559,9 @@ function installHub() {
             if (done.has(seq)) trigger('PZ2QoL_FetchAck', seq);
             return;
         }
-        if (job && job.seq === seq) return;
-        pending = { seq, species: String(species), room: Number.isFinite(Number(room)) ? Number(room) : -1, exclude: String(exclude || ''), fresh: fresh === true };
+        // a repeat of the request in hand keeps its first hand-over's age
+        if ((job && job.seq === seq) || (pending && pending.seq === seq)) return;
+        pending = { seq, species: String(species), room: Number.isFinite(Number(room)) ? Number(room) : -1, exclude: String(exclude || ''), fresh: fresh === true, at: Date.now() };
         breadcrumb(fresh === true ? 'fetch_pending_fresh' : 'fetch_pending_again');
     });
     setInterval(hubTick, HUB_TICK_MS);
@@ -516,11 +584,8 @@ export function installStorageFetch() {
 
 // Harness only.
 export function _resetFetch() {
-    if (job) clearInterval(job.timer);
-    job = null;
+    endJob();
     pending = null;
-    waitingSince = 0;
-    closeCard();
 }
 
 export function _fetchState() {
